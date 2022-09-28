@@ -37,5 +37,8 @@ export LLVMLITE_SKIP_LLVM_VERSION_CHECK=1
 #EXTRA_LLVM_LIBS="-L /opt/intel/intelpython3/lib -fno-lto" LDFLAGS=-fPIC $PYTHON setup.py build --force
 #EXTRA_LLVM_LIBS="-L /opt/intel/intelpython3/lib -fno-lto" $PYTHON setup.py install
 
-$PYTHON setup.py build --force
-$PYTHON setup.py install
+EXTRA_LLVM_LIBS="-fno-lto" LDFLAGS=-fPIC $PYTHON setup.py build --force
+EXTRA_LLVM_LIBS="-fno-lto" $PYTHON setup.py install
+
+#$PYTHON setup.py build --force
+#$PYTHON setup.py install

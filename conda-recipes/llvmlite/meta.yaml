@@ -27,11 +27,12 @@ requirements:
     # The DLL build uses cmake on Windows
     - cmake          # [win]
     - make           # [unix and not (armv6l or armv7l or aarch64)]
+    - sysroot_linux-64 2.17
   host:
     - python
     # On channel https://anaconda.org/numba/
-    - llvmdev 14.1.0_pyomp *0 # [not win]
-    - llvmdev 14.1.0_pyomp 0 # [win]
+    - llvmdev 14.1.0_pyomp *1 # [not win]
+    - llvmdev 14.1.0_pyomp 1 # [win]
     - vs2015_runtime # [win]
     # llvmdev is built with libz compression support
     - zlib           # [unix and not (armv6l or armv7l or aarch64)]

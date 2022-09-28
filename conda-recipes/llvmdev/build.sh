@@ -3,6 +3,8 @@
 git checkout numba-llvm-update
 # based on https://github.com/AnacondaRecipes/llvmdev-feedstock/blob/master/recipe/build.sh
 
+cd llvm
+
 set -x
 
 # allow setting the targets to build as an environment variable

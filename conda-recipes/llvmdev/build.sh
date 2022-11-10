@@ -1,6 +1,5 @@
 #!/bin/bash
 
-git checkout numba-llvm-update
 # based on https://github.com/AnacondaRecipes/llvmdev-feedstock/blob/master/recipe/build.sh
 
 cd llvm
@@ -69,6 +68,7 @@ fi
 # _cmake_config+=(--trace-expand)
 # CPU_COUNT=1
 
+rm -rf build
 mkdir build
 cd build
 

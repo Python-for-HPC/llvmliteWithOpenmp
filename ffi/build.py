@@ -7,6 +7,7 @@ from __future__ import print_function
 
 from ctypes.util import find_library
 import re
+import multiprocessing
 import os
 import subprocess
 import shutil
@@ -71,10 +72,10 @@ def find_windows_generator():
         )
 
     generators.extend([
-        # use VS2017 toolkit on VS2019 to match how llvmdev is built
-        ('Visual Studio 16 2019', ('x64' if is_64bit else 'Win32'), 'v141'),
-        # This is the generator configuration for VS2017
-        ('Visual Studio 15 2017' + (' Win64' if is_64bit else ''), None, None)
+        # use VS2019 to match how llvmdev is built
+        ('Visual Studio 16 2019', ('x64' if is_64bit else 'Win32'), 'v142'),
+        # # This is the generator configuration for VS2017
+        # ('Visual Studio 15 2017' + (' Win64' if is_64bit else ''), None, None)
     ])
     for generator in generators:
         build_dir = tempfile.mkdtemp()
@@ -162,9 +163,10 @@ def main_posix(kind, library_ext):
         print(msg)
         print(warning + '\n')
     else:
-
-        if not out.startswith('11'):
-            msg = ("Building llvmlite requires LLVM 11.x.x, got "
+        (version, _) = out.split('.', 1)
+        version = int(version)
+        if version < 11 or version > 14:
+            msg = ("Building llvmlite requires LLVM 11, 12, 13, or 14, got "
                    "{!r}. Be sure to set LLVM_CONFIG to the right executable "
                    "path.\nRead the documentation at "
                    "http://llvmlite.pydata.org/ for more information about "
@@ -205,7 +207,12 @@ def main_posix(kind, library_ext):
         os.environ['CXX_STATIC_LINK'] = "-static-libstdc++"
 
     makefile = "Makefile.%s" % (kind,)
-    subprocess.check_call(['make', '-f', makefile])
+    try:
+        default_makeopts = "-j%d" % (multiprocessing.cpu_count(),)
+    except NotImplementedError:
+        default_makeopts = ""
+    makeopts = os.environ.get('LLVMLITE_MAKEOPTS', default_makeopts).split()
+    subprocess.check_call(['make', '-f', makefile] + makeopts)
     shutil.copy('libllvmlite' + library_ext, target_dir)
 
 

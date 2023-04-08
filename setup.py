@@ -22,34 +22,22 @@ import os
 import sys
 
 
-_version_module = None
-try:
-    from packaging import version as _version_module
-except ImportError:
-    try:
-        from setuptools._vendor.packaging import version as _version_module
-    except ImportError:
-        pass
+min_python_version = (3, 8)
 
 
-min_python_version = "3.7"
-max_python_version = "3.10"  # exclusive
+def _version_info_str(int_tuple):
+    return ".".join(map(str, int_tuple))
 
 
 def _guard_py_ver():
-    if _version_module is None:
-        return
+    current_python_version = sys.version_info[:3]
+    min_py = _version_info_str(min_python_version)
+    cur_py = _version_info_str(current_python_version)
 
-    parse = _version_module.parse
-
-    min_py = parse(min_python_version)
-    max_py = parse(max_python_version)
-    cur_py = parse('.'.join(map(str, sys.version_info[:3])))
-
-    if not min_py <= cur_py < max_py:
-        msg = ('Cannot install on Python version {}; only versions >={},<{} '
+    if not min_python_version <= current_python_version:
+        msg = ('Cannot install on Python version {}; only versions >={} '
                'are supported.')
-        raise RuntimeError(msg.format(cur_py, min_py, max_py))
+        raise RuntimeError(msg.format(cur_py, min_py))
 
 
 _guard_py_ver()
@@ -150,7 +138,8 @@ class LlvmliteClean(clean):
                 remove_tree(path, dry_run=self.dry_run)
             else:
                 for fname in files:
-                    if fname.endswith('.pyc') or fname.endswith('.so'):
+                    if (fname.endswith('.pyc') or fname.endswith('.so')
+                            or fname.endswith('.o')):
                         fpath = os.path.join(path, fname)
                         os.remove(fpath)
                         log.info("removing '%s'", fpath)
@@ -191,7 +180,6 @@ ext_stub = Extension(name="llvmlite.binding._stub",
 packages = ['llvmlite',
             'llvmlite.binding',
             'llvmlite.ir',
-            'llvmlite.llvmpy',
             'llvmlite.tests',
             ]
 
@@ -209,18 +197,21 @@ setup(name='llvmlite',
           "Operating System :: OS Independent",
           "Programming Language :: Python",
           "Programming Language :: Python :: 3",
-          "Programming Language :: Python :: 3.7",
           "Programming Language :: Python :: 3.8",
           "Programming Language :: Python :: 3.9",
+          "Programming Language :: Python :: 3.10",
+          "Programming Language :: Python :: 3.11",
           "Topic :: Software Development :: Code Generators",
           "Topic :: Software Development :: Compilers",
       ],
       # Include the separately-compiled shared library
       url="http://llvmlite.readthedocs.io",
+      project_urls={
+          "Source": "https://github.com/numba/llvmlite",
+      },
       packages=packages,
       license="BSD",
       cmdclass=cmdclass,
       long_description=long_description,
-      python_requires=">={},<{}".format(min_python_version,
-                                        max_python_version),
+      python_requires=">={}".format(_version_info_str(min_python_version)),
       )

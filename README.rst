@@ -2,8 +2,8 @@
 llvmlite
 ========
 
-.. image:: https://dev.azure.com/numba/numba/_apis/build/status/numba.llvmlite?branchName=master
-   :target: https://dev.azure.com/numba/numba/_build/latest?definitionId=2&branchName=master
+.. image:: https://dev.azure.com/numba/numba/_apis/build/status/numba.llvmlite?branchName=main
+   :target: https://dev.azure.com/numba/numba/_build/latest?definitionId=2&branchName=main
    :alt: Azure Pipelines
 .. image:: https://codeclimate.com/github/numba/llvmlite/badges/gpa.svg
    :target: https://codeclimate.com/github/numba/llvmlite
@@ -54,17 +54,11 @@ Key Benefits
 * llvmlite is quite faster than llvmpy's thanks to a much simpler architeture
   (the Numba_ test suite is twice faster than it was).
 
-llvmpy Compatibility Layer
---------------------------
-
-The ``llvmlite.llvmpy`` namespace provides a minimal llvmpy compatibility
-layer.
-
-
 Compatibility
 =============
 
-llvmlite works with Python 3.7 and greater.
+llvmlite works with Python 3.8 and greater. We attempt to test with the latest
+Python version, this can be checked by looking at the public CI builds.
 
 As of version 0.37.0, llvmlite requires LLVM 11.x.x on all architectures
 

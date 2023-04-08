@@ -1,6 +1,7 @@
+import sys
 import ctypes
-import os
 import threading
+import importlib.resources as _impres
 
 from llvmlite.binding.common import _decode_string, _is_shutting_down
 from llvmlite.utils import get_library_name
@@ -151,44 +152,39 @@ class _lib_fn_wrapper(object):
             return self._cfn(*args, **kwargs)
 
 
-_lib_dir = os.path.dirname(__file__)
+def _importlib_resources_path_repl(package, resource):
+    """Replacement implementation of `import.resources.path` to avoid
+    deprecation warning following code at importlib_resources/_legacy.py
+    as suggested by https://importlib-resources.readthedocs.io/en/latest/using.html#migrating-from-legacy
 
-if os.name == 'nt':
-    # Append DLL directory to PATH, to allow loading of bundled CRT libraries
-    # (Windows uses PATH for DLL loading, see http://msdn.microsoft.com/en-us/library/7d83bc18.aspx).  # noqa E501
-    os.environ['PATH'] += ';' + _lib_dir
+    Notes on differences from importlib.resources implementation:
+
+    The `_common.normalize_path(resource)` call is skipped because it is an
+    internal API and it is unnecessary for the use here. What it does is
+    ensuring `resource` is a str and that it does not contain path separators.
+    """ # noqa E501
+    return _impres.as_file(_impres.files(package) / resource)
+
+
+_importlib_resources_path = (_importlib_resources_path_repl
+                             if sys.version_info[:2] >= (3, 9)
+                             else _impres.path)
 
 
 _lib_name = get_library_name()
 
 
-# Possible CDLL loading paths
-_lib_paths = [
-    os.path.join(_lib_dir, _lib_name),  # Absolute
-    _lib_name,  # In PATH
-    os.path.join('.', _lib_name),  # Current directory
-]
-
-# If pkg_resources is available, try to use it to load the shared object.
-# This allows direct import from egg files.
+pkgname = ".".join(__name__.split(".")[0:-1])
 try:
-    from pkg_resources import resource_filename
-except ImportError:
-    pass
-else:
-    _lib_paths.append(resource_filename(__name__, _lib_name))
-
-
-# Try to load from all of the different paths
-for _lib_path in _lib_paths:
-    try:
-        lib = ctypes.CDLL(_lib_path)
-    except OSError:
-        continue
-    else:
-        break
-else:
-    raise OSError("Could not load shared object file: {}".format(_lib_name))
+    _lib_handle = _importlib_resources_path(pkgname, _lib_name)
+    lib = ctypes.CDLL(str(_lib_handle.__enter__()))
+    # on windows file handles to the dll file remain open after
+    # loading, therefore we can not exit the context manager
+    # which might delete the file
+except OSError as e:
+    msg = f"""Could not find/load shared object file: {_lib_name}
+ Error was: {e}"""
+    raise OSError(msg)
 
 
 lib = _lib_wrapper(lib)

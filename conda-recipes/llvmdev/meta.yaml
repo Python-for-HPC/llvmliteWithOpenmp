@@ -7,7 +7,7 @@ package:
   version: {{ version }}
 
 source:
-  git_url: https://github.com/ggeorgakoudis/llvm-project.git
+  git_url: https://github.com/Python-for-HPC/llvm-project.git
   git_rev: pyomp
   git_depth: 1
 

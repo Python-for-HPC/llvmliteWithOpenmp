@@ -1,5 +1,3 @@
-cd llvm
-
 mkdir build
 cd build
 
@@ -68,7 +66,7 @@ for /l %%n in (0,1,%MAX_INDEX_CMAKE_GENERATOR%) do (
           -DCMAKE_BUILD_TYPE="%BUILD_CONFIG%" ^
           -DCMAKE_PREFIX_PATH="%LIBRARY_PREFIX%" ^
           -DCMAKE_INSTALL_PREFIX:PATH="%LIBRARY_PREFIX%" ^
-          %CMAKE_CUSTOM% "%SRC_DIR%"
+          %CMAKE_CUSTOM% "%SRC_DIR%\llvm"
     if not errorlevel 1 goto configuration_successful
     del CMakeCache.txt
 )

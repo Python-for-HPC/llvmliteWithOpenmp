@@ -1,3 +1,5 @@
+cd llvm
+
 mkdir build
 cd build
 

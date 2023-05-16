@@ -251,6 +251,7 @@ class Target(ffi.ObjectRef):
                                                 opt,
                                                 _encode_string(reloc),
                                                 _encode_string(codemodel),
+                                                int(printmc),
                                                 int(jit),
                                                 _encode_string(abiname),
                                                 )

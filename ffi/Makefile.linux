@@ -2,8 +2,10 @@
 CXX ?= g++
 
 # -flto and --exclude-libs allow us to remove those parts of LLVM we don't use
-CXX_FLTO_FLAGS ?= -flto
-LD_FLTO_FLAGS ?= -flto -Wl,--exclude-libs=ALL
+CXX_FLTO_FLAGS ?= -fno-lto
+LD_FLTO_FLAGS ?= -fno-lto -Wl,--exclude-libs=ALL
+#CXX_FLTO_FLAGS ?= -flto
+#LD_FLTO_FLAGS ?= -flto -Wl,--exclude-libs=ALL
 # -fPIC is required when compiling objects for a shared library
 CXX_FPIC_FLAGS ?= -fPIC
 

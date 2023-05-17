@@ -1,5 +1,5 @@
-{% set shortversion = "14.1_pyomp" %}
-{% set version = "14.1.0_pyomp" %}
+{% set shortversion = "14.0_pyomp" %}
+{% set version = "14.0.6_pyomp" %}
 {% set build_number = "1" %}
 
 package:

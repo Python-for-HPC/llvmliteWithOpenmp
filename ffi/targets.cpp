@@ -156,7 +156,7 @@ LLVMPY_GetTargetDescription(LLVMTargetRef T) {
 }
 
 API_EXPORT(LLVMTargetMachineRef)
-// Why did I previously remote PrintMC?
+// Todd pyomp: Why did I previously remote PrintMC?
 LLVMPY_CreateTargetMachine(LLVMTargetRef T, const char *Triple, const char *CPU,
                            const char *Features, int OptLevel,
                            const char *RelocModel, const char *CodeModel,

@@ -237,7 +237,8 @@ class Target(ffi.ObjectRef):
         assert 0 <= opt <= 3
         assert reloc in RELOC
         assert codemodel in CODEMODEL
-        assert printmc == False
+        # Todd pyomp: Why did I add this next line?
+        #assert printmc == False
         triple = self._triple
         # MCJIT under Windows only supports ELF objects, see
         # http://lists.llvm.org/pipermail/llvm-dev/2013-December/068341.html
@@ -404,6 +405,8 @@ ffi.lib.LLVMPY_CreateTargetMachine.argtypes = [
     c_char_p,
     # CodeModel
     c_char_p,
+    # PrintMC
+    c_int,
     # JIT
     c_int,
     # ABIName

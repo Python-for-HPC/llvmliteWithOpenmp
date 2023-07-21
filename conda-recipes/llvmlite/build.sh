@@ -64,6 +64,8 @@ declare -a tools=( \
 "opt"              \
 "llc"              \
 "llvm-link"        \
+"clang"            \
+"lld"              \
 )
 
 for tool in "${tools[@]}"; do

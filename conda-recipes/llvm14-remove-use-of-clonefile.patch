@@ -1,6 +1,6 @@
-diff -ur a/llvm-14.0.6.src/lib/Support/Unix/Path.inc b/llvm-14.0.6.src/lib/Support/Unix/Path.inc
---- a/llvm-14.0.6.src/lib/Support/Unix/Path.inc	2022-03-14 05:44:55.000000000 -0400
-+++ b/llvm-14.0.6.src/lib/Support/Unix/Path.inc	2022-09-19 11:30:59.000000000 -0400
+diff -ur a/llvm/lib/Support/Unix/Path.inc b/llvm/lib/Support/Unix/Path.inc
+--- a/llvm/lib/Support/Unix/Path.inc	2022-03-14 05:44:55.000000000 -0400
++++ b/llvm/lib/Support/Unix/Path.inc	2022-09-19 11:30:59.000000000 -0400
 @@ -1462,6 +1462,7 @@
  std::error_code copy_file(const Twine &From, const Twine &To) {
    std::string FromS = From.str();
@@ -17,9 +17,9 @@ diff -ur a/llvm-14.0.6.src/lib/Support/Unix/Path.inc b/llvm-14.0.6.src/lib/Suppo
    if (!copyfile(FromS.c_str(), ToS.c_str(), /*State=*/NULL, COPYFILE_DATA))
      return std::error_code();
    return std::error_code(errno, std::generic_category());
-diff -ur a/llvm-14.0.6.src/unittests/Support/Path.cpp b/llvm-14.0.6.src/unittests/Support/Path.cpp
---- a/llvm-14.0.6.src/unittests/Support/Path.cpp	2022-03-14 05:44:55.000000000 -0400
-+++ b/llvm-14.0.6.src/unittests/Support/Path.cpp	2022-09-19 11:33:07.000000000 -0400
+diff -ur a/llvm/unittests/Support/Path.cpp b/llvm/unittests/Support/Path.cpp
+--- a/llvm/unittests/Support/Path.cpp	2022-03-14 05:44:55.000000000 -0400
++++ b/llvm/unittests/Support/Path.cpp	2022-09-19 11:33:07.000000000 -0400
 @@ -2267,15 +2267,15 @@
  
    EXPECT_EQ(fs::setPermissions(TempPath, fs::set_uid_on_exe), NoError);

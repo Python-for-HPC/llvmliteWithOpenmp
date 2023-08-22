@@ -11,9 +11,16 @@ source:
   git_tag: pyomp
   git_depth: 1
   patches:
-    - ../llvm14-clear-gotoffsetmap.patch
-    - ../llvm14-remove-use-of-clonefile.patch
-    - ../llvm14-svml.patch
+    - patches/llvm14-clear-gotoffsetmap.patch
+    - patches/llvm14-remove-use-of-clonefile.patch
+    - patches/llvm14-svml.patch
+    - patches/0001-Fix-sysroot-detection-for-linux.patch
+    - patches/0002-clang-add-conda-specific-env-var-CONDA_BUILD_SYSROOT.patch
+    - patches/0003-Fix-normalizeProgramName-s-handling-of-dots-outside-.patch
+    - patches/0004-Set-VERSION-in-osx-as-well.patch
+    - patches/0005-Fix-crosscompiling-LLVM-tools.patch
+    - patches/0006-Only-error-on-undefined-TARGET_OS_OSX.patch  # [osx and x86_64]
+    - patches/0007-set-libclang-SOVERSION-unconditionally.patch
 
 build:
   number: {{ build_number }}

@@ -1,18 +1,18 @@
-From e46d9dd8f6701270b5243348ffb4b8c3430c4229 Mon Sep 17 00:00:00 2001
-From: Isuru Fernando <isuruf@gmail.com>
-Date: Mon, 8 Apr 2019 16:32:17 -0500
-Subject: [PATCH 1/7] Fix sysroot detection for linux
+From 7a49bc550ed905e012bd108c861712fb1bec9a28 Mon Sep 17 00:00:00 2001
+From: "Todd A. Anderson" <drtodd13@comcast.net>
+Date: Tue, 22 Aug 2023 15:37:47 -0700
+Subject: [PATCH] Clang Linux driver sysroot
 
 ---
  clang/lib/Driver/ToolChains/Linux.cpp | 20 ++++++++++++++++----
  1 file changed, 16 insertions(+), 4 deletions(-)
 
 diff --git a/clang/lib/Driver/ToolChains/Linux.cpp b/clang/lib/Driver/ToolChains/Linux.cpp
-index c6fb290ffdb..b817620a8bb 100644
+index 83cb41159de7..a403477dbd32 100644
 --- a/clang/lib/Driver/ToolChains/Linux.cpp
 +++ b/clang/lib/Driver/ToolChains/Linux.cpp
-@@ -370,18 +370,30 @@ std::string Linux::computeSysRoot() const {
-     return std::string();
+@@ -355,18 +355,30 @@ std::string Linux::computeSysRoot() const {
+       return AndroidSysRootPath;
    }
  
 -  if (!GCCInstallation.isValid() || !getTriple().isMIPS())
@@ -46,3 +46,6 @@ index c6fb290ffdb..b817620a8bb 100644
        (InstallDir + "/../../../../" + TripleStr + "/libc" + Multilib.osSuffix())
            .str();
  
+-- 
+2.31.1
+

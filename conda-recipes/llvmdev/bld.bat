@@ -1,10 +1,13 @@
 setlocal EnableDelayedExpansion
-FOR /D %%d IN (llvm-*.src) DO (MKLINK /J llvm %%d
-if !errorlevel! neq 0 exit /b %errorlevel%)
-FOR /D %%d IN (lld-*.src) DO (MKLINK /J lld %%d
-if !errorlevel! neq 0 exit /b %errorlevel%)
-FOR /D %%d IN (unwind\libunwind-*.src) DO (MKLINK /J libunwind %%d
-if !errorlevel! neq 0 exit /b %errorlevel%)
+
+cd llvm
+
+REM FOR /D %%d IN (llvm-*.src) DO (MKLINK /J llvm %%d
+REM if !errorlevel! neq 0 exit /b %errorlevel%)
+REM FOR /D %%d IN (lld-*.src) DO (MKLINK /J lld %%d
+REM if !errorlevel! neq 0 exit /b %errorlevel%)
+REM FOR /D %%d IN (unwind\libunwind-*.src) DO (MKLINK /J libunwind %%d
+REM if !errorlevel! neq 0 exit /b %errorlevel%)
 
 DIR
 
@@ -18,7 +21,8 @@ REM === Configure step ===
 REM allow setting the targets to build as an environment variable
 REM default is LLVM 11 default architectures + RISCV.  Can remove this entire option in LLVM 13
 if "%LLVM_TARGETS_TO_BUILD%"=="" (
-    set "LLVM_TARGETS_TO_BUILD=host;AArch64;AMDGPU;ARM;BPF;Hexagon;Mips;MSP430;NVPTX;PowerPC;Sparc;SystemZ;X86;XCore;RISCV"
+    set "LLVM_TARGETS_TO_BUILD=host;AMDGPU;NVPTX"
+REM    set "LLVM_TARGETS_TO_BUILD=host;AArch64;AMDGPU;ARM;BPF;Hexagon;Mips;MSP430;NVPTX;PowerPC;Sparc;SystemZ;X86;XCore;RISCV"
 )
 if "%ARCH%"=="32" (
     set "ARCH_POSTFIX="
@@ -45,7 +49,7 @@ set "CMAKE_GENERATOR_TOOLSET[0]=v142"
 REM Reduce build times and package size by removing unused stuff
 REM BENCHMARKS (new for llvm8) don't build under Visual Studio 14 2015
 set CMAKE_CUSTOM=-DLLVM_TARGETS_TO_BUILD="%LLVM_TARGETS_TO_BUILD%" ^
-    -DLLVM_ENABLE_PROJECTS:STRING=lld ^
+    -DLLVM_ENABLE_PROJECTS:STRING=clang;lld;libunwind ^
     -DLLVM_ENABLE_ZLIB=OFF ^
     -DLLVM_INCLUDE_UTILS=ON ^
     -DLLVM_INCLUDE_DOCS=OFF ^
@@ -54,7 +58,8 @@ set CMAKE_CUSTOM=-DLLVM_TARGETS_TO_BUILD="%LLVM_TARGETS_TO_BUILD%" ^
     -DLLVM_USE_INTEL_JITEVENTS=ON ^
     -DLLVM_INCLUDE_BENCHMARKS=OFF ^
     -DLLVM_ENABLE_DIA_SDK=OFF ^
-    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly
+    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly ^
+    -DOPENMP_ENABLE_LIBOMPTARGET_PROFILING=OFF
 
 REM try all compatible visual studio toolsets to find one that is installed
 setlocal enabledelayedexpansion

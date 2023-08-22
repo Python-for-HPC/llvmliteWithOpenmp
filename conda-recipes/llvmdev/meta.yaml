@@ -42,6 +42,7 @@ requirements:
     - python >=3
     - sysroot_linux-64 2.17 # [not win]
     - git
+    - git-lfs
   host:
     # needed for llc at runtime
     - zlib # [not win]

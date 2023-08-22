@@ -18,6 +18,9 @@ else
     DARWIN_TARGET=x86_64-apple-darwin13.4.0
 fi
 
+echo CONDA_PREFIX is $CONDA_PREFIX
+#GCC_INSTALL_PREFIX=${CONDA_PREFIX}/${HOST}
+GCC_INSTALL_PREFIX=${CONDA_PREFIX}/lib/gcc/x86_64-conda-linux-gnu/7.5.0
 #mv llvm-*.src llvm
 #mv lld-*.src lld
 #mv unwind/libunwind-*.src libunwind
@@ -51,6 +54,8 @@ _cmake_config+=(-DLLVM_TARGETS_TO_BUILD=${LLVM_TARGETS_TO_BUILD})
 _cmake_config+=(-DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly)
 _cmake_config+=(-DLLVM_INCLUDE_UTILS=ON) # for llvm-lit
 _cmake_config+=(-DLLVM_INCLUDE_BENCHMARKS:BOOL=OFF) # doesn't build without the rest of LLVM project
+_cmake_config+=(-DLLVM_HOST_TRIPLE:STRING=${HOST})
+_cmake_config+=(-DLLVM_DEFAULT_TARGET_TRIPLE:STRING=${HOST})
 
 # TODO :: It would be nice if we had a cross-ecosystem 'BUILD_TIME_LIMITED' env var we could use to
 #         disable these unnecessary but useful things.
@@ -78,16 +83,16 @@ elif [[ $(uname) == Linux ]]; then
 fi
 
 # For when the going gets tough:
-# _cmake_config+=(-Wdev)
-# _cmake_config+=(--debug-output)
-# _cmake_config+=(--trace-expand)
-# CPU_COUNT=1
+_cmake_config+=(-Wdev)
+_cmake_config+=(--debug-output)
+_cmake_config+=(--trace-expand)
+#CPU_COUNT=1
 
 rm -rf build
 mkdir build
 cd build
 
-cmake --debug-output --trace-expand -G'Unix Makefiles'     \
+cmake -G'Unix Makefiles'     \
       "${_cmake_config[@]}"  \
       ..
 

@@ -20,7 +20,7 @@ source:
     - patches/0004-Set-VERSION-in-osx-as-well.patch
     - patches/0005-Fix-crosscompiling-LLVM-tools.patch
     - patches/0006-Only-error-on-undefined-TARGET_OS_OSX.patch  # [osx and x86_64]
-    - patches/0007-set-libclang-SOVERSION-unconditionally.patch
+#    - patches/0007-set-libclang-SOVERSION-unconditionally.patch
 
 build:
   number: {{ build_number }}

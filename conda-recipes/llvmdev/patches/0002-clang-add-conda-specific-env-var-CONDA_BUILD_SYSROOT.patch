@@ -43,7 +43,7 @@ index 9fab27544923..e3b973dcdc2c 100644
 -      AddPath("/usr/local/include", System, false);
 +      Optional<std::string> CondaBuildSysrootValue =
 +              llvm::sys::Process::GetEnv("CONDA_BUILD_SYSROOT");
-+      if (!CondaBuildSysrootValue.has_value())
++      if (!CondaBuildSysrootValue.hasValue())
 +        AddPath("/usr/local/include", System, false);
        break;
      }

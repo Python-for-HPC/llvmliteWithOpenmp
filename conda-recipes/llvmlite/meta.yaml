@@ -1,7 +1,7 @@
 {% set VERSION_SUFFIX = "" %} # debug version suffix, appended to the version
 {% set shortversion = "0.4_pyomp" %}
 {% set version = "0.4_pyomp" %}
-{% set build_number = "1" %}
+{% set build_number = "3" %}
 
 package:
   name: llvmlite
@@ -35,8 +35,8 @@ requirements:
   host:
     - python
     # On channel https://anaconda.org/numba/
-    - llvmdev 14.1.0_pyomp *2 # [not win]
-    - llvmdev 14.1.0_pyomp 2 # [win]
+    - llvmdev 14.0.6_pyomp *3 # [not win]
+    - llvmdev 14.0.6_pyomp 3 # [win]
     - vs2015_runtime # [win]
     # llvmdev is built with libz compression support
     - zlib           # [unix and not (armv6l or armv7l)]

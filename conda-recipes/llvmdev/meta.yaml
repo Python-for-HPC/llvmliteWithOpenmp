@@ -1,6 +1,6 @@
-{% set shortversion = "14.1_pyomp" %}
-{% set version = "14.1.0_pyomp" %}
-{% set build_number = "2" %}
+{% set shortversion = "14.0.6_pyomp" %}
+{% set version = "14.0.6_pyomp" %}
+{% set build_number = "3" %}
 
 package:
   name: llvmdev
@@ -9,7 +9,7 @@ package:
 source:
   git_url: https://github.com/Python-for-HPC/llvm-project.git
   git_tag: pyomp
-  git_depth: 1
+#  git_depth: 1
   patches:
     - patches/llvm14-clear-gotoffsetmap.patch
     - patches/llvm14-remove-use-of-clonefile.patch

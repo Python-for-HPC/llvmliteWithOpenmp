@@ -58,16 +58,18 @@ EXTRA_LLVM_LIBS="-fno-lto" $PYTHON setup.py install
 #$PYTHON setup.py build --force
 #$PYTHON setup.py install
 
-cp "$BUILD_PREFIX/lib/libomptarget*.bc" "$PREFIX/lib"
+# Move below to clang RT package.
 
-declare -a tools=( \
-"opt"              \
-"llc"              \
-"llvm-link"        \
-"clang"            \
-"lld"              \
-)
+#cp "$BUILD_PREFIX/lib/libomptarget*.bc" "$PREFIX/lib"
 
-for tool in "${tools[@]}"; do
-    cp "$BUILD_PREFIX/bin/$tool" "$PREFIX/bin/$tool"
-done
+#declare -a tools=( \
+#"opt"              \
+#"llc"              \
+#"llvm-link"        \
+#"clang"            \
+#"lld"              \
+#)
+
+#for tool in "${tools[@]}"; do
+#    cp "$BUILD_PREFIX/bin/$tool" "$PREFIX/bin/$tool"
+#done

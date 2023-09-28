@@ -28,8 +28,8 @@ GCC_INSTALL_PREFIX=${CONDA_PREFIX}/lib/gcc/x86_64-conda-linux-gnu/7.5.0
 declare -a _cmake_config
 _cmake_config+=(-DCMAKE_INSTALL_PREFIX:PATH=${PREFIX})
 _cmake_config+=(-DCMAKE_BUILD_TYPE:STRING=Release)
-_cmake_config+=(-DLLVM_ENABLE_PROJECTS:STRING="clang;lld;libunwind")
-_cmake_config+=(-DLLVM_ENABLE_RUNTIMES:STRING=openmp)
+#_cmake_config+=(-DLLVM_ENABLE_PROJECTS:STRING="clang;lld;libunwind")
+#_cmake_config+=(-DLLVM_ENABLE_RUNTIMES:STRING=openmp)
 _cmake_config+=(-DLLVM_OPTIMIZED_TABLEGEN:BOOL=ON)
 _cmake_config+=(-DOPENMP_ENABLE_LIBOMPTARGET_PROFILING:BOOL=OFF)
 # The bootstrap clang I use was built with a static libLLVMObject.a and I trying to get the same here

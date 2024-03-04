@@ -317,6 +317,15 @@ class TargetMachine(ffi.ObjectRef):
         finally:
             ffi.lib.LLVMPY_DisposeMemoryBuffer(mb)
 
+    def adjust_pass_manager(self, pmb):
+        """ Adjust the pass manager builder with target specific passes.
+
+        Args
+        ----
+        pmb: PassManagerBuilder reference
+        """
+        ffi.lib.LLVMPY_AdjustPassManager(self, pmb)
+
     @property
     def target_data(self):
         return TargetData(ffi.lib.LLVMPY_CreateTargetMachineData(self))

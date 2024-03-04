@@ -1,10 +1,12 @@
 #include "core.h"
 #include "llvm-c/Target.h"
 #include "llvm-c/TargetMachine.h"
+#include "llvm-c/Transforms/PassManagerBuilder.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Support/Host.h"
 #if LLVM_VERSION_MAJOR > 13
 #include "llvm/MC/TargetRegistry.h"
@@ -287,6 +289,11 @@ LLVMPY_HasSVMLSupport(void) {
 #else
     return 0;
 #endif
+}
+
+API_EXPORT(void)
+LLVMPY_AdjustPassManager(LLVMTargetMachineRef TM, LLVMPassManagerBuilderRef PMB) {
+    llvm::unwrap(TM)->adjustPassManager(*llvm::unwrap(PMB));
 }
 
 /*

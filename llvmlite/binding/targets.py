@@ -326,6 +326,24 @@ class TargetMachine(ffi.ObjectRef):
         """
         ffi.lib.LLVMPY_AdjustPassManager(self, pmb)
 
+    def add_pass_config(self, pm):
+        """ Add target specific pass configuration for codegen.
+
+        Args
+        ----
+        pm: PassManager reference
+        """
+        ffi.lib.LLVMPY_AddPassConfig(self, pm)
+
+    def add_target_library_info(self, mod, pm):
+        """ Add target library info pass.
+
+        Args
+        ----
+        pm: PassManager reference
+        """
+        ffi.lib.LLVMPY_AddTargetLibraryInfoPass(mod, pm)
+
     @property
     def target_data(self):
         return TargetData(ffi.lib.LLVMPY_CreateTargetMachineData(self))
@@ -459,3 +477,20 @@ ffi.lib.LLVMPY_CreateTargetMachineData.restype = ffi.LLVMTargetDataRef
 
 ffi.lib.LLVMPY_HasSVMLSupport.argtypes = []
 ffi.lib.LLVMPY_HasSVMLSupport.restype = c_int
+
+ffi.lib.LLVMPY_AdjustPassManager.argtypes = [
+    ffi.LLVMTargetMachineRef, ffi.LLVMPassManagerBuilderRef
+]
+ffi.lib.LLVMPY_AdjustPassManager.restype = c_void_p
+
+ffi.lib.LLVMPY_AddPassConfig.argtypes = [
+    ffi.LLVMTargetMachineRef,
+    ffi.LLVMPassManagerRef
+]
+ffi.lib.LLVMPY_AddPassConfig.restype = c_void_p
+
+ffi.lib.LLVMPY_AddTargetLibraryInfoPass.argtypes = [
+    ffi.LLVMModuleRef,
+    ffi.LLVMPassManagerRef
+]
+ffi.lib.LLVMPY_AddTargetLibraryInfoPass.restype = c_void_p

@@ -8,12 +8,14 @@
 #include "llvm/IR/Type.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Support/Host.h"
+#include <llvm/Target/TargetOptions.h>
 #if LLVM_VERSION_MAJOR > 13
 #include "llvm/MC/TargetRegistry.h"
 #else
 #include "llvm/Support/TargetRegistry.h"
 #endif
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/CodeGen/TargetPassConfig.h"
 
 #include <cstdio>
 #include <cstring>
@@ -217,8 +219,31 @@ LLVMPY_CreateTargetMachine(LLVMTargetRef T, const char *Triple, const char *CPU,
     opt.MCOptions.ShowMCInst = PrintMC;
 #endif
     opt.MCOptions.ABIName = ABIName;
+#if 0
+    //opt.EnableFastISel = 1;
+    //opt.EnableGlobalISel = 0;
+    //opt.EnableIPRA = 0;
+    opt.AllowFPOpFusion = FPOpFusion::Fast;
+#endif
 
     bool jit = JIT;
+#if 0
+    dbgs() << "Triple " << Triple << "\n";
+    dbgs() << "CPU " << CPU << "\n";
+    dbgs() << "FeaturesStr " << Features<< "\n";
+    dbgs() << "Options\n";
+    dbgs() << "\t" << "UnsafeFPMath " << opt.UnsafeFPMath << "\n";
+    dbgs() << "\t" << "NoInfsFPMath " << opt.NoInfsFPMath << "\n";
+    dbgs() << "\t" << "NoNaNsFPMath " << opt.NoNaNsFPMath << "\n";
+    dbgs() << "\t" << "NoTrappingFPMath " << opt.NoTrappingFPMath << "\n";
+    dbgs() << "\t" << "NoSignedZerosFPMath " << opt.NoSignedZerosFPMath << "\n";
+    dbgs() << "\t" << "HonorSignDependentRoundingFPMathOption " << opt.HonorSignDependentRoundingFPMathOption << "\n";
+    dbgs() << "\t" << "EnableFastISel " << opt.EnableFastISel << "\n";
+    dbgs() << "\t" << "EnableGlobalISel " << opt.EnableGlobalISel << "\n";
+    dbgs() << "\t" << "EnableIPRA " << opt.EnableIPRA << "\n";
+    dbgs() << "\t" << "FloatABIType " << opt.FloatABIType << "\n";
+    dbgs() << "\t" << "AllowFPOpFusion " << opt.AllowFPOpFusion << "\n";
+#endif
 
     return wrap(unwrap(T)->createTargetMachine(Triple, CPU, Features, opt, rm,
                                                cm, cgol, jit));
@@ -294,6 +319,21 @@ LLVMPY_HasSVMLSupport(void) {
 API_EXPORT(void)
 LLVMPY_AdjustPassManager(LLVMTargetMachineRef TM, LLVMPassManagerBuilderRef PMB) {
     llvm::unwrap(TM)->adjustPassManager(*llvm::unwrap(PMB));
+}
+
+API_EXPORT(void)
+LLVMPY_AddPassConfig(LLVMTargetMachineRef TM, LLVMPassManagerRef PM) {
+    auto &LTM = static_cast<llvm::LLVMTargetMachine &>(*llvm::unwrap(TM));
+    auto *PassConfig = LTM.createPassConfig(*llvm::unwrap(PM));
+    llvm::unwrap(PM)->add(PassConfig);
+}
+
+API_EXPORT(void)
+LLVMPY_AddTargetLibraryInfoPass(LLVMModuleRef M, LLVMPassManagerRef PM) {
+    llvm::Triple ModuleTriple{llvm::unwrap(M)->getTargetTriple()};
+    llvm::TargetLibraryInfoImpl TLII{ModuleTriple};
+    llvm::unwrap(PM)->add(
+        new llvm::TargetLibraryInfoWrapperPass(TLII));
 }
 
 /*

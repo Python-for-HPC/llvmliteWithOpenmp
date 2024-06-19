@@ -2,14 +2,11 @@
 
 # based on https://github.com/AnacondaRecipes/llvmdev-feedstock/blob/master/recipe/build.sh
 
-cd llvm
-
 set -x
 
 # allow setting the targets to build as an environment variable
 # default is LLVM 11 default architectures + RISCV.  Can remove this entire option in LLVM 13
 LLVM_TARGETS_TO_BUILD=${LLVM_TARGETS_TO_BUILD:-"host;AMDGPU;NVPTX"}
-#LLVM_TARGETS_TO_BUILD=${LLVM_TARGETS_TO_BUILD:-"host;AArch64;AMDGPU;ARM;BPF;Hexagon;Mips;MSP430;NVPTX;PowerPC;Sparc;SystemZ;X86;XCore;RISCV"}
 
 # This is the clang compiler prefix
 if [[ $build_platform == osx-arm64 ]]; then
@@ -18,24 +15,15 @@ else
     DARWIN_TARGET=x86_64-apple-darwin13.4.0
 fi
 
-echo CONDA_PREFIX is $CONDA_PREFIX
-#GCC_INSTALL_PREFIX=${CONDA_PREFIX}/${HOST}
-GCC_INSTALL_PREFIX=${CONDA_PREFIX}/lib/gcc/x86_64-conda-linux-gnu/7.5.0
-#mv llvm-*.src llvm
-#mv lld-*.src lld
-#mv unwind/libunwind-*.src libunwind
-
 declare -a _cmake_config
 _cmake_config+=(-DCMAKE_INSTALL_PREFIX:PATH=${PREFIX})
 _cmake_config+=(-DCMAKE_BUILD_TYPE:STRING=Release)
-#_cmake_config+=(-DLLVM_ENABLE_PROJECTS:STRING="clang;lld;libunwind")
-#_cmake_config+=(-DLLVM_ENABLE_RUNTIMES:STRING=openmp)
-_cmake_config+=(-DLLVM_OPTIMIZED_TABLEGEN:BOOL=ON)
-_cmake_config+=(-DOPENMP_ENABLE_LIBOMPTARGET_PROFILING:BOOL=OFF)
+_cmake_config+=(-DLLVM_ENABLE_PROJECTS:STRING="clang")
+_cmake_config+=(-DLLVM_ENABLE_RUNTIMES:STRING="openmp")
 # The bootstrap clang I use was built with a static libLLVMObject.a and I trying to get the same here
 # _cmake_config+=(-DBUILD_SHARED_LIBS:BOOL=ON)
 _cmake_config+=(-DLLVM_ENABLE_ASSERTIONS:BOOL=ON)
-_cmake_config+=(-DLINK_POLLY_INTO_TOOLS:BOOL=ON)
+#_cmake_config+=(-DLINK_POLLY_INTO_TOOLS:BOOL=ON)
 # Don't really require libxml2. Turn it off explicitly to avoid accidentally linking to system libs
 _cmake_config+=(-DLLVM_ENABLE_LIBXML2:BOOL=OFF)
 # Urgh, llvm *really* wants to link to ncurses / terminfo and we *really* do not want it to.
@@ -51,11 +39,13 @@ _cmake_config+=(-DCLANG_ENABLE_LIBXML=OFF)
 _cmake_config+=(-DLIBOMP_INSTALL_ALIASES=OFF)
 _cmake_config+=(-DLLVM_ENABLE_RTTI=OFF)
 _cmake_config+=(-DLLVM_TARGETS_TO_BUILD=${LLVM_TARGETS_TO_BUILD})
-_cmake_config+=(-DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly)
+#_cmake_config+=(-DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly)
 _cmake_config+=(-DLLVM_INCLUDE_UTILS=ON) # for llvm-lit
 _cmake_config+=(-DLLVM_INCLUDE_BENCHMARKS:BOOL=OFF) # doesn't build without the rest of LLVM project
-_cmake_config+=(-DLLVM_HOST_TRIPLE:STRING=${HOST})
-_cmake_config+=(-DLLVM_DEFAULT_TARGET_TRIPLE:STRING=${HOST})
+#_cmake_config+=(-DLLVM_HOST_TRIPLE:STRING=${HOST})
+#_cmake_config+=(-DLLVM_DEFAULT_TARGET_TRIPLE:STRING=${HOST})
+_cmake_config+=(-DCLANG_INCLUDE_TESTS=OFF) # for llvm-lit
+_cmake_config+=(-DCLANG_INCLUDE_DOCS=OFF) # for llvm-lit
 
 # TODO :: It would be nice if we had a cross-ecosystem 'BUILD_TIME_LIMITED' env var we could use to
 #         disable these unnecessary but useful things.
@@ -82,10 +72,15 @@ elif [[ $(uname) == Linux ]]; then
 #  _cmake_config+=(-DLLVM_BINUTILS_INCDIR=${PREFIX}/lib/gcc/${cpu_arch}-${vendor}-linux-gnu/${compiler_ver}/plugin/include)
 fi
 
+if [[ "$target_platform" == "linux-ppc64le" ]]; then
+  # avoid problematic flags when compiling OpenMP with built clang
+  CFLAGS="$(echo ${CFLAGS} | sed 's/-mpower8-fusion//g')"
+  CXXFLAGS="$(echo ${CXXFLAGS} | sed 's/-mpower8-fusion//g')"
+fi
 # For when the going gets tough:
-_cmake_config+=(-Wdev)
-_cmake_config+=(--debug-output)
-_cmake_config+=(--trace-expand)
+#_cmake_config+=(-Wdev)
+#_cmake_config+=(--debug-output)
+#_cmake_config+=(--trace-expand)
 #CPU_COUNT=1
 
 rm -rf build
@@ -94,7 +89,7 @@ cd build
 
 cmake -G'Unix Makefiles'     \
       "${_cmake_config[@]}"  \
-      ..
+      ../llvm
 
 ARCH=`uname -m`
 if [ $ARCH == 'armv7l' ]; then # RPi need thread count throttling

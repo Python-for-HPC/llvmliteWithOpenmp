@@ -7,20 +7,18 @@ package:
   version: {{ version }}
 
 source:
-  git_url: https://github.com/Python-for-HPC/llvm-project.git
-  git_tag: pyomp
-#  git_depth: 1
+  url: https://github.com/Python-for-HPC/llvm-project/archive/refs/tags/pyomp-v0.1.tar.gz
   patches:
     - patches/llvm14-clear-gotoffsetmap.patch
     - patches/llvm14-remove-use-of-clonefile.patch
     - patches/llvm14-svml.patch
+    - patches/0000-Find-conda-gcc-installation.patch
     - patches/0001-Fix-sysroot-detection-for-linux.patch
     - patches/0002-clang-add-conda-specific-env-var-CONDA_BUILD_SYSROOT.patch
     - patches/0003-Fix-normalizeProgramName-s-handling-of-dots-outside-.patch
     - patches/0004-Set-VERSION-in-osx-as-well.patch
     - patches/0005-Fix-crosscompiling-LLVM-tools.patch
     - patches/0006-Only-error-on-undefined-TARGET_OS_OSX.patch  # [osx and x86_64]
-#    - patches/0007-set-libclang-SOVERSION-unconditionally.patch
 
 build:
   number: {{ build_number }}
@@ -39,17 +37,12 @@ requirements:
     # irrespective of python version
     - {{ compiler('c') }} # [unix and not (armv6l or armv7l)]
     - {{ compiler('cxx') }} # [unix and not (armv6l or armv7l)]
-    - {{ compiler('c') }} # [win]
-    - {{ compiler('cxx') }} # [win]
     - cmake
     - make # [unix and not (armv6l or armv7l or aarch64)]
     # Needed to unpack the source tarball
     - m2w64-xz  # [win]
     # Needed to build LLVM
     - python >=3
-    - sysroot_linux-64 2.17 # [not win]
-    - git
-    - git-lfs
   host:
     # needed for llc at runtime
     - zlib # [not win]
@@ -73,8 +66,8 @@ test:
     - test -f $PREFIX/lib/libLLVMCore.a                      # [not win]
 
     # LLD tests
-    - ld.lld --version                                       # [unix]
-    - lld-link /?                                            # [win]
+    #- ld.lld --version                                       # [unix]
+    #- lld-link /?                                            # [win]
 
 about:
   home: http://llvm.org/

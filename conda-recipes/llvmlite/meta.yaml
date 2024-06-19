@@ -1,7 +1,5 @@
 {% set VERSION_SUFFIX = "" %} # debug version suffix, appended to the version
-{% set shortversion = "0.4_pyomp" %}
-{% set version = "0.4_pyomp" %}
-{% set build_number = "3" %}
+{% set version = "0.40_pyomp" %}
 
 package:
   name: llvmlite
@@ -10,8 +8,7 @@ package:
   #version: {{ "%s%s" % (environ.get('GIT_DESCRIBE_TAG', '').lstrip('v'), VERSION_SUFFIX) }}
 
 source:
-  # Using the local source tree helps test building without pushing changes
-  path: ../..
+  url: https://github.com/Python-for-HPC/llvmliteWithOpenmp/archive/refs/tags/llvmlite-0.40_pyomp.tar.gz
 
 build:
   number: {{ environ.get('GIT_DESCRIBE_NUMBER', 0) }}

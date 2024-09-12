@@ -14,7 +14,7 @@
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "llvm-c/Transforms/IntrinsicsOpenMP.h"
+#include "IntrinsicsOpenMP_CAPI.h"
 #include "llvm-c/Transforms/IPO.h"
 #include "llvm-c/Transforms/Scalar.h"
 #include "llvm/IR/LLVMRemarkStreamer.h"

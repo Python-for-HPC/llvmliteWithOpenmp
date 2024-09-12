@@ -22,13 +22,15 @@ target_dir = os.path.join(os.path.dirname(here_dir), 'llvmlite', 'binding')
 is_64bit = sys.maxsize >= 2**32
 
 
-def try_cmake(cmake_dir, build_dir, generator, arch=None, toolkit=None):
+def try_cmake(cmake_dir, build_dir, generator, config=None, arch=None, toolkit=None):
     old_dir = os.getcwd()
     args = ['cmake', '-G', generator]
     if arch is not None:
         args += ['-A', arch]
     if toolkit is not None:
         args += ['-T', toolkit]
+    if config is not None:
+        args += [f'-DCMAKE_BUILD_TYPE={config}']
     args.append(cmake_dir)
     try:
         os.chdir(build_dir)
@@ -105,10 +107,12 @@ def main_windows():
 
 def main_posix_cmake(kind, library_ext):
     generator = 'Unix Makefiles'
-    config = 'Release'
+    config = os.environ.get('CMAKE_BUILD_TYPE')
+    if config is None:
+        config = 'Release'
     if not os.path.exists(build_dir):
         os.mkdir(build_dir)
-    try_cmake(here_dir, build_dir, generator)
+    try_cmake(here_dir, build_dir, generator, config)
     subprocess.check_call(['cmake', '--build', build_dir, '--config', config])
     shutil.copy(os.path.join(build_dir, 'libllvmlite' + library_ext), target_dir)
 

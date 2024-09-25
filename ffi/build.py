@@ -113,7 +113,8 @@ def main_posix_cmake(kind, library_ext):
     if not os.path.exists(build_dir):
         os.mkdir(build_dir)
     try_cmake(here_dir, build_dir, generator, config)
-    subprocess.check_call(['cmake', '--build', build_dir, '--config', config])
+    subprocess.check_call(['cmake', '--build', build_dir, '--config', config,
+        '-j%d' % (multiprocessing.cpu_count()) ])
     shutil.copy(os.path.join(build_dir, 'libllvmlite' + library_ext), target_dir)
 
 def main_posix(kind, library_ext):
@@ -178,7 +179,10 @@ def main_posix(kind, library_ext):
             raise RuntimeError(msg)
 
     # Get LLVM information for building
-    libs = run_llvm_config(llvm_config, "--system-libs --libs all".split())
+    if int(os.environ.get('LLVMLITE_LLVM_STATIC_LINK', 0)):
+        libs = run_llvm_config(llvm_config, "--system-libs --libs all --link-static".split())
+    else:
+        libs = run_llvm_config(llvm_config, "--system-libs --libs all".split())
     libs += " " + os.getenv('EXTRA_LLVM_LIBS', "")
     # Normalize whitespace (trim newlines)
     os.environ['LLVM_LIBS'] = ' '.join(libs.split())

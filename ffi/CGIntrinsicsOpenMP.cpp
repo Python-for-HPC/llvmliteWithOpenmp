@@ -1695,8 +1695,17 @@ void CGIntrinsicsOpenMP::emitOMPOffloadingMappings(
       EmitMappingEntry(Size, GetMapType(DSA), V, V);
       break;
     case DSA_FIRSTPRIVATE: {
-      auto *ScalarV = OMPBuilder.Builder.CreateLoad(
+      auto *Load = OMPBuilder.Builder.CreateLoad(
           V->getType()->getPointerElementType(), V);
+      // TODO: Runtime expects values in Int64 type, fix with arguments in
+      // struct.
+      AllocaInst *TmpInt64 = OMPBuilder.Builder.CreateAlloca(
+          OMPBuilder.Int64, nullptr, V->getName() + ".casted");
+      Value *Cast = OMPBuilder.Builder.CreateBitCast(
+          TmpInt64, V->getType());
+      auto *Store = OMPBuilder.Builder.CreateStore(Load, Cast);
+      Value *ScalarV=
+          OMPBuilder.Builder.CreateLoad(OMPBuilder.Int64, TmpInt64);
       Size = ConstantInt::get(OMPBuilder.SizeTy,
                               M.getDataLayout().getTypeAllocSize(
                                   V->getType()->getPointerElementType()));
@@ -2209,7 +2218,8 @@ void CGIntrinsicsOpenMP::emitOMPTargetDevice(Function *Fn, BasicBlock *EntryBB,
     DEBUG_ENABLE(dbgs() << "V " << *V << " DSA " << DSA << "\n");
     switch (DSA) {
     case DSA_FIRSTPRIVATE:
-      WrapperArgsTypes.push_back(V->getType()->getPointerElementType());
+      // TODO: Runtime expects firstprivate (scalars) typed as Int64.
+      WrapperArgsTypes.push_back(OMPBuilder.Int64);
       WrapperArgsNames.push_back(V->getName());
       break;
     case DSA_PRIVATE:
@@ -2219,14 +2229,6 @@ void CGIntrinsicsOpenMP::emitOMPTargetDevice(Function *Fn, BasicBlock *EntryBB,
       WrapperArgsTypes.push_back(V->getType());
       WrapperArgsNames.push_back(V->getName());
     }
-  }
-
-  for (auto &Arg : WrapperArgsNames)
-    DEBUG_ENABLE(dbgs() << "[IOMP] Adding wrapper arg " << Arg << "\n");
-  for (auto &Arg : WrapperArgsTypes) {
-    DEBUG_ENABLE(dbgs() << "[IOMP] Arg type ");
-    DEBUG_ENABLE(Arg->print(dbgs()));
-    DEBUG_ENABLE(dbgs() << "\n");
   }
 
   Twine DevWrapperFuncName = getDevWrapperFuncPrefix() + Fn->getName();
@@ -2250,14 +2252,26 @@ void CGIntrinsicsOpenMP::emitOMPTargetDevice(Function *Fn, BasicBlock *EntryBB,
   SmallVector<Value *, 8> DevFuncArgs;
   Triple TargetTriple(M.getTargetTriple());
 
-  for (auto &Arg : NumbaWrapperFunc->args())
-    DevFuncArgs.push_back(&Arg);
+  for (auto &Arg : NumbaWrapperFunc->args()) {
+    // TODO: Runtime expects all scalars typed as Int64.
+    if (!Arg.getType()->isPointerTy()) {
+      auto *ParamType =
+          DevFuncCallee.getFunctionType()->getParamType(Arg.getArgNo());
+      AllocaInst *TmpInt64 = Builder.CreateAlloca(OMPBuilder.Int64, nullptr,
+                                                  Arg.getName() + ".casted");
+      Builder.CreateStore(&Arg, TmpInt64);
+      Value *Cast = Builder.CreateBitCast(TmpInt64, ParamType->getPointerTo());
+      Value *ConvLoad = Builder.CreateLoad(ParamType, Cast);
+      DevFuncArgs.push_back(ConvLoad);
+    } else
+      DevFuncArgs.push_back(&Arg);
+  }
 
   bool IsSPMD = (TargetInfo.ExecMode == omp::OMP_TGT_EXEC_MODE_SPMD);
   if (isOpenMPDeviceRuntime()) {
     OpenMPIRBuilder::LocationDescription Loc(Builder);
     auto IP = OMPBuilder.createTargetInit(Loc, /* IsSPMD */ IsSPMD,
-                                          /* RequiresFullRuntime */ true);
+                                          /* RequiresFullRuntime */ false);
     Builder.restoreIP(IP);
   }
 
@@ -2267,7 +2281,7 @@ void CGIntrinsicsOpenMP::emitOMPTargetDevice(Function *Fn, BasicBlock *EntryBB,
   if (isOpenMPDeviceRuntime()) {
     OpenMPIRBuilder::LocationDescription Loc(Builder);
     OMPBuilder.createTargetDeinit(Loc, /* IsSPMD */ IsSPMD,
-                                  /* RequiresFullRuntime */ true);
+                                  /* RequiresFullRuntime */ false);
   }
 
   Builder.CreateRetVoid();
@@ -2455,7 +2469,16 @@ void CGIntrinsicsOpenMP::emitOMPTeamsHostRuntime(
       Type *VPtrElemTy = CapturedVars[Idx]->getType()->getPointerElementType();
       Value *Load =
           OMPBuilder.Builder.CreateLoad(VPtrElemTy, CapturedVars[Idx]);
-      Args.push_back(Load);
+      // TODO: Runtime expects values in Int64 type, fix with arguments in
+      // struct.
+      AllocaInst *TmpInt64 = OMPBuilder.Builder.CreateAlloca(
+          OMPBuilder.Int64, nullptr, "fpriv.byval");
+      Value *Cast = OMPBuilder.Builder.CreateBitCast(
+          TmpInt64, CapturedVars[Idx]->getType());
+      OMPBuilder.Builder.CreateStore(Load, Cast);
+      Value *ConvLoad =
+          OMPBuilder.Builder.CreateLoad(OMPBuilder.Int64, TmpInt64);
+      Args.push_back(ConvLoad);
 
       continue;
     }
@@ -2909,8 +2932,12 @@ void CGIntrinsicsOpenMP::emitOMPDistributeParallelFor(
   Value *ThreadNum = OMPBuilder.getOrCreateThreadID(SrcLoc);
 
   // TODO: add more scheduling types.
+  // If targeting the GPU device runtime distribute strided (chunked), else
+  // distribute consecutively.
+  auto DistSchedType = (isOpenMPDeviceRuntime() ? OMPScheduleType::DistributeChunked
+                                            : OMPScheduleType::Distribute);
   Constant *SchedulingType =
-      ConstantInt::get(I32Type, static_cast<int>(OMPLoopInfo.DistSched));
+      ConstantInt::get(I32Type, static_cast<int>(DistSchedType));
 
   DEBUG_ENABLE(dbgs() << "=== SchedulingType " << *SchedulingType << "\n");
   DEBUG_ENABLE(dbgs() << "=== PLowerBound " << *PLowerBound << "\n");
@@ -2942,8 +2969,7 @@ void CGIntrinsicsOpenMP::emitOMPDistributeParallelFor(
   OMPBuilder.Builder.SetInsertPoint(DistributeCond);
   DistributeCond->getTerminator()->eraseFromParent();
   Value *LoadIV = OMPBuilder.Builder.CreateLoad(IVTy, PDistributeIV);
-  LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
-  Cond = OMPBuilder.Builder.CreateICmpSLE(LoadIV, LoadUB);
+  Cond = OMPBuilder.Builder.CreateICmpSLE(LoadIV, LoadGlobalUB);
   OMPBuilder.Builder.CreateCondBr(Cond, ForEntry, DistributeExit);
 
   // Emit Inc block.
@@ -2952,6 +2978,15 @@ void CGIntrinsicsOpenMP::emitOMPDistributeParallelFor(
   Value *LoadStride = OMPBuilder.Builder.CreateLoad(IVTy, PStride);
   Value *UpdateIV = OMPBuilder.Builder.CreateAdd(LoadIV, LoadStride);
   OMPBuilder.Builder.CreateStore(UpdateIV, PDistributeIV);
+
+  LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
+  Value *UpdateLB = OMPBuilder.Builder.CreateAdd(LoadLB, LoadStride);
+  OMPBuilder.Builder.CreateStore(UpdateLB, PLowerBound);
+
+  LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
+  Value *UpdateUB = OMPBuilder.Builder.CreateAdd(LoadUB, LoadStride);
+  OMPBuilder.Builder.CreateStore(UpdateUB, PUpperBound);
+
   DistributeInc->getTerminator()->setSuccessor(0, DistributeCond);
 
   // Emit Exit block for the distribute outer loop.
@@ -2995,6 +3030,11 @@ void CGIntrinsicsOpenMP::emitOMPDistributeParallelFor(
   OMPInnerLoopInfo.Start = OMPLoopInfo.Start;
   OMPInnerLoopInfo.LB = PLowerBound;
   OMPInnerLoopInfo.UB = PUpperBound;
+  // If targeting the GPU device chunk for strided execution, else chunk
+  // consecutively.
+  OMPInnerLoopInfo.Sched =
+      (isOpenMPDeviceRuntime() ? OMPScheduleType::StaticChunked
+                               : OMPScheduleType::Static);
   // TODO: schedule, chunk.
   emitOMPFor(DSAValueMap, OMPInnerLoopInfo, ForBegin, ForEnd,
              /* IsStandalone */ false);

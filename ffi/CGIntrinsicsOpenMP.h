@@ -151,7 +151,7 @@ struct OMPLoopInfoStruct {
   Value *LB = nullptr;
   Value *UB = nullptr;
   // Implementation defined: set default schedule to static.
-  OMPScheduleType DistSched = OMPScheduleType::DistributeChunked;
+  OMPScheduleType DistSched = OMPScheduleType::Distribute;
   OMPScheduleType Sched = OMPScheduleType::Static;
   Value *Chunk = nullptr;
 };

@@ -128,8 +128,7 @@ Function *CGIntrinsicsOpenMP::createOutlinedFunction(
       assert(V->getName().startswith(".") &&
              "Expected Numba temporary value, named starting with .");
       if (!V->getName().startswith("."))
-        report_fatal_error(
-            "Expected Numba temporary value, named starting with .");
+          FATAL_ERROR("Expected Numba temporary value, named starting with .");
       Privates.push_back(V);
       continue;
     }
@@ -155,10 +154,12 @@ Function *CGIntrinsicsOpenMP::createOutlinedFunction(
       CapturedShared.push_back(V);
       break;
     case DSA_REDUCTION_ADD:
+    case DSA_REDUCTION_SUB:
+    case DSA_REDUCTION_MUL:
       Reductions.push_back(V);
       break;
     default:
-      report_fatal_error("Unexpected DSA type");
+      FATAL_ERROR("Unexpected DSA type");
     }
   }
 
@@ -343,26 +344,30 @@ Function *CGIntrinsicsOpenMP::createOutlinedFunction(
     if (VMap)
       (*VMap)[V] = AI;
 
-    if (DSAValueMap[V].Type == DSA_REDUCTION_ADD) {
-      Type *VTy = V->getType()->getPointerElementType();
-      Value *Priv = CreateAllocaAtEntry(VTy, /* ArraySize */ nullptr,
-                                        V->getName() + ".red.priv");
+    InsertPointTy AllocaIP(OutlinedEntryBB,
+                            OutlinedEntryBB->getFirstInsertionPt());
 
-      // Store idempotent value based on operation and type.
-      // TODO: create templated emitInitAndAppendInfo in CGReduction
-      if (VTy->isIntegerTy())
-        OMPBuilder.Builder.CreateStore(ConstantInt::get(VTy, 0), Priv);
-      else if (VTy->isFloatTy() || VTy->isDoubleTy())
-        OMPBuilder.Builder.CreateStore(ConstantFP::get(VTy, 0.0), Priv);
-      else
-        assert(false &&
-               "Unsupported type to init with idempotent reduction value");
 
-      ReductionInfos.push_back({VTy, AI, Priv, CGReduction::sumReduction,
-                                CGReduction::sumAtomicReduction});
-      ReplaceUses(Uses, Priv);
-    } else
-      llvm_unreachable("Unsupported reduction");
+    Value *Priv = nullptr;
+    switch (DSAValueMap[V].Type) {
+    case DSA_REDUCTION_ADD:
+      Priv = CGReduction::emitInitAndAppendInfo<DSA_REDUCTION_ADD>(
+          OMPBuilder.Builder, AllocaIP, AI, ReductionInfos);
+      break;
+    case DSA_REDUCTION_SUB:
+      Priv = CGReduction::emitInitAndAppendInfo<DSA_REDUCTION_SUB>(
+          OMPBuilder.Builder, AllocaIP, AI, ReductionInfos);
+      break;
+    case DSA_REDUCTION_MUL:
+      Priv = CGReduction::emitInitAndAppendInfo<DSA_REDUCTION_MUL>(
+          OMPBuilder.Builder, AllocaIP, AI, ReductionInfos);
+      break;
+    default:
+      FATAL_ERROR("Unsupported reduction");
+    }
+
+    assert(Priv && "Expected non-null private reduction variable");
+    ReplaceUses(Uses, Priv);
 
     ++AI;
   }
@@ -388,7 +393,7 @@ Function *CGIntrinsicsOpenMP::createOutlinedFunction(
                     << *OutlinedFn << "=== End of Dump OutlinedFn\n");
 
   if (verifyFunction(*OutlinedFn, &errs()))
-    report_fatal_error("Verification of OutlinedFn failed!");
+    FATAL_ERROR("Verification of OutlinedFn failed!");
 
   CapturedVars.append(CapturedShared);
   CapturedVars.append(CapturedFirstprivate);
@@ -571,7 +576,7 @@ void CGIntrinsicsOpenMP::emitOMPParallelHostRuntime(
                     << *Fn << "=== End of Dump OuterFn\n");
 
   if (verifyFunction(*Fn, &errs()))
-    report_fatal_error("Verification of OuterFn failed!");
+    FATAL_ERROR("Verification of OuterFn failed!");
 }
 
 #if 0
@@ -649,7 +654,7 @@ void CGIntrinsicsOpenMP::emitOMPParallelHostRuntimeOMPIRBuilder(
 
       OMPBuilder.Builder.restoreIP(CodeGenIP);
       // Store idempotent value based on operation and type.
-      // TODO: create templated emitInitAndAppendInfo in CGReduction
+      // TODO: use emitInitAndAppendInfo in CGReduction
       if (VTy->isIntegerTy())
         OMPBuilder.Builder.CreateStore(ConstantInt::get(VTy, 0), V);
       else if (VTy->isFloatTy() || VTy->isDoubleTy())
@@ -822,7 +827,7 @@ void CGIntrinsicsOpenMP::emitOMPParallelDeviceRuntime(
   OMPBuilder.Builder.CreateRetVoid();
 
   if (verifyFunction(*OutlinedWrapperFn, &errs()))
-    report_fatal_error("Verification of OutlinedWrapperFn failed!");
+    FATAL_ERROR("Verification of OutlinedWrapperFn failed!");
 
   DEBUG_ENABLE(dbgs() << "=== Dump OutlinedWrapper\n"
                     << *OutlinedWrapperFn
@@ -980,7 +985,7 @@ void CGIntrinsicsOpenMP::emitOMPParallelDeviceRuntime(
                     << *Fn << "=== End of Dump OuterFn\n");
 
   if (verifyFunction(*Fn, &errs()))
-    report_fatal_error("Verification of OuterFn failed!");
+    FATAL_ERROR("Verification of OuterFn failed!");
 }
 
 FunctionCallee CGIntrinsicsOpenMP::getKmpcForStaticInit(Type *Ty) {
@@ -993,7 +998,8 @@ FunctionCallee CGIntrinsicsOpenMP::getKmpcForStaticInit(Type *Ty) {
   if (Bitwidth == 64)
     return OMPBuilder.getOrCreateRuntimeFunction(
         M, OMPRTL___kmpc_for_static_init_8u);
-  llvm_unreachable("unknown OpenMP loop iterator bitwidth");
+
+  FATAL_ERROR("unknown OpenMP loop iterator bitwidth");
 }
 
 FunctionCallee CGIntrinsicsOpenMP::getKmpcDistributeStaticInit(Type *Ty) {
@@ -1006,7 +1012,8 @@ FunctionCallee CGIntrinsicsOpenMP::getKmpcDistributeStaticInit(Type *Ty) {
   if (Bitwidth == 64)
     return OMPBuilder.getOrCreateRuntimeFunction(
         M, OMPRTL___kmpc_distribute_static_init_8u);
-  llvm_unreachable("unknown OpenMP loop iterator bitwidth");
+
+  FATAL_ERROR("unknown OpenMP loop iterator bitwidth");
 }
 
 void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
@@ -1108,26 +1115,17 @@ void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
         } else
           OMPBuilder.Builder.CreateStore(V, ReplacementValue);
       } else if (DSA == DSA_REDUCTION_ADD) {
-        ReplacementValue = OMPBuilder.Builder.CreateAlloca(
-            VTy, /* ArraySize */ nullptr, Orig->getName() + ".red.priv");
-
-        // Store idempotent value based on operation and type.
-        // TODO: create templated emitInitAndAppendInfo in CGReduction
-        if (VTy->isIntegerTy())
-          OMPBuilder.Builder.CreateStore(ConstantInt::get(VTy, 0),
-                                         ReplacementValue);
-        else if (VTy->isFloatTy() || VTy->isDoubleTy())
-          OMPBuilder.Builder.CreateStore(ConstantFP::get(VTy, 0.0),
-                                         ReplacementValue);
-        else
-          report_fatal_error(
-              "Unsupported type to init with idempotent reduction value");
-
-        ReductionInfos.push_back({VTy, Orig, ReplacementValue,
-                                  CGReduction::sumReduction,
-                                  CGReduction::sumAtomicReduction});
+        ReplacementValue =
+            CGReduction::emitInitAndAppendInfo<DSA_REDUCTION_ADD>(
+                OMPBuilder.Builder, OMPBuilder.Builder.saveIP(), Orig,
+                ReductionInfos);
+      } else if (DSA == DSA_REDUCTION_SUB) {
+        ReplacementValue =
+            CGReduction::emitInitAndAppendInfo<DSA_REDUCTION_SUB>(
+                OMPBuilder.Builder, OMPBuilder.Builder.saveIP(), Orig,
+                ReductionInfos);
       } else
-        assert(false && "Unsupported privatization");
+        FATAL_ERROR("Unsupported privatization");
 
       assert(ReplacementValue && "Expected non-null ReplacementValue");
 
@@ -1266,7 +1264,7 @@ void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
   }
 
   if (verifyFunction(*PreHeader->getParent(), &errs()))
-    report_fatal_error("Verification of omp for lowering failed!");
+    FATAL_ERROR("Verification of omp for lowering failed!");
 }
 
 void CGIntrinsicsOpenMP::emitOMPTask(DSAValueMapTy &DSAValueMap, Function *Fn,
@@ -1308,7 +1306,7 @@ void CGIntrinsicsOpenMP::emitOMPTask(DSAValueMapTy &DSAValueMap, Function *Fn,
       // Store a copy of the value, thus get the pointer element type.
       PrivatesTy.push_back(OriginalValue->getType()->getPointerElementType());
     } else
-      assert(false && "Unknown DSA type");
+      FATAL_ERROR("Unknown DSA type");
   }
 
   StructType *KmpSharedsTTy = nullptr;
@@ -1528,7 +1526,7 @@ void CGIntrinsicsOpenMP::emitOMPTask(DSAValueMapTy &DSAValueMap, Function *Fn,
         ReplacementValue = FirstprivateGEP;
         ++PrivatesGEPIdx;
       } else
-        assert(false && "Unknown DSA type");
+        FATAL_ERROR("Unknown DSA type");
 
       assert(ReplacementValue && "Expected non-null ReplacementValue");
       SmallVector<User *, 8> Users(OriginalValue->users());
@@ -1671,8 +1669,7 @@ void CGIntrinsicsOpenMP::emitOMPOffloadingMappings(
       // do nothing
       break;
     default:
-      assert(false && "Unknown mapping type");
-      report_fatal_error("Unknown mapping type");
+      FATAL_ERROR("Unknown mapping type");
     }
 
     return MapType;
@@ -1772,8 +1769,7 @@ void CGIntrinsicsOpenMP::emitOMPOffloadingMappings(
       break;
     }
     default:
-      assert(false && "Unknown mapping type");
-      report_fatal_error("Unknown mapping type");
+      FATAL_ERROR("Unknown mapping type");
     }
   }
 
@@ -1889,7 +1885,7 @@ void CGIntrinsicsOpenMP::emitOMPCritical(Function *Fn, BasicBlock *BBEntry,
                                          BodyGenCallbackTy BodyGenCB,
                                          FinalizeCallbackTy FiniCB) {
   if (isOpenMPDeviceRuntime())
-    report_fatal_error("Critical regions are not (yet) implemented on device");
+    FATAL_ERROR("Critical regions are not (yet) implemented on device");
 
   const DebugLoc DL = BBEntry->getTerminator()->getDebugLoc();
   BBEntry->getTerminator()->eraseFromParent();
@@ -2394,7 +2390,7 @@ void CGIntrinsicsOpenMP::emitOMPTeamsDeviceRuntime(
                     << *Fn << "=== End of Dump OuterFn\n");
 
   if (verifyFunction(*Fn, &errs()))
-    report_fatal_error("Verification of OuterFn failed!");
+    FATAL_ERROR("Verification of OuterFn failed!");
 }
 
 void CGIntrinsicsOpenMP::emitOMPTeams(DSAValueMapTy &DSAValueMap,
@@ -2494,7 +2490,7 @@ void CGIntrinsicsOpenMP::emitOMPTeamsHostRuntime(
                     << *Fn << "=== End of Dump OuterFn\n");
 
   if (verifyFunction(*Fn, &errs()))
-    report_fatal_error("Verification of OuterFn failed!");
+    FATAL_ERROR("Verification of OuterFn failed!");
 }
 
 void CGIntrinsicsOpenMP::emitOMPTargetEnterData(
@@ -2702,7 +2698,7 @@ void CGIntrinsicsOpenMP::emitOMPDistribute(DSAValueMapTy &DSAValueMap,
         } else
           OMPBuilder.Builder.CreateStore(V, ReplacementValue);
       } else
-        report_fatal_error("Unsupported privatization");
+        FATAL_ERROR("Unsupported privatization");
 
       assert(ReplacementValue && "Expected non-null ReplacementValue");
 
@@ -3071,7 +3067,7 @@ void CGIntrinsicsOpenMP::emitOMPDistributeParallelFor(
   DSAValueMap.erase(PUpperBound);
 
   if (verifyFunction(*Fn, &errs()))
-    report_fatal_error(
+    FATAL_ERROR(
         "Verification of DistributeParallelFor lowering failed!");
 
   DEBUG_ENABLE(dbgs() << "=== Dump DistributeParallelFor\n"
@@ -3171,4 +3167,50 @@ bool CGIntrinsicsOpenMP::isOpenMPDeviceRuntime() {
     return true;
 
   return false;
+}
+
+template <>
+Value *CGReduction::emitOperation<DSA_REDUCTION_ADD>(IRBuilderBase &IRB,
+                                                     Value *LHS, Value *RHS) {
+    Type *VTy = RHS->getType();
+    if (VTy->isIntegerTy())
+        return IRB.CreateAdd(LHS, RHS, "red.add");
+    else if (VTy->isFloatTy() || VTy->isDoubleTy())
+        return IRB.CreateFAdd(LHS, RHS, "red.add");
+    else
+        FATAL_ERROR("Unsupported type for reduction operation");
+}
+
+// OpenMP 5.1, 2.21.5, sub is the same as add.
+template <>
+Value *CGReduction::emitOperation<DSA_REDUCTION_SUB>(IRBuilderBase &IRB,
+                                                     Value *LHS, Value *RHS) {
+    return emitOperation<DSA_REDUCTION_ADD>(IRB, LHS, RHS);
+}
+
+template <>
+Value *CGReduction::emitOperation<DSA_REDUCTION_MUL>(IRBuilderBase &IRB,
+                                                     Value *LHS, Value *RHS) {
+    Type *VTy = RHS->getType();
+    if (VTy->isIntegerTy())
+        return IRB.CreateMul(LHS, RHS, "red.mul");
+    else if (VTy->isFloatTy() || VTy->isDoubleTy())
+        return IRB.CreateFMul(LHS, RHS, "red.mul");
+    else
+        FATAL_ERROR("Unsupported type for reduction operation");
+}
+
+template <>
+InsertPointTy CGReduction::emitAtomicOperationRMW<DSA_REDUCTION_ADD>(
+    IRBuilderBase &IRB, Value *LHS, Value *Partial) {
+    IRB.CreateAtomicRMW(AtomicRMWInst::Add, LHS, Partial, None,
+                        AtomicOrdering::Monotonic);
+    return IRB.saveIP();
+}
+
+// OpenMP 5.1, 2.21.5, sub is the same as add.
+template <>
+InsertPointTy CGReduction::emitAtomicOperationRMW<DSA_REDUCTION_SUB>(
+    IRBuilderBase &IRB, Value *LHS, Value *Partial) {
+    return emitAtomicOperationRMW<DSA_REDUCTION_ADD>(IRB, LHS, Partial);
 }

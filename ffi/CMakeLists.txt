@@ -4,6 +4,10 @@ cmake_minimum_required(VERSION 2.8.8)
 # This will define the name of the solution file in the build directory
 project(llvmlite_ffi)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 include(CheckIncludeFiles)
 
 if(NOT MSVC)
@@ -51,11 +55,17 @@ add_library(llvmlite SHARED assembly.cpp bitcode.cpp core.cpp initfini.cpp
 # the LLVM cmake setup, so we use the workaround instead.
 # Bug reported upstream at: https://bugs.llvm.org/show_bug.cgi?id=47003
 # BROKEN: llvm_map_components_to_libnames(llvm_libs all)
-if ($ENV{LLVMLITE_SHARED})
-    set(llvm_libs LLVM)
-else()
-    set(llvm_libs ${LLVM_AVAILABLE_LIBS})
-endif()
+
+# NOTE: For PyOMP, we link with LLVM dynamically to avoid linker relocation
+# errors usig llvmdev from conda-forge. If we decide that we must link with
+# llvmdev statically, that will require using llvmdev from numba (or our custom
+# one), built for that purpose
+set(llvm_libs LLVM)
+#if ($ENV{LLVMLITE_SHARED})
+#    set(llvm_libs LLVM)
+#else()
+#    set(llvm_libs ${LLVM_AVAILABLE_LIBS})
+#endif()
 
 # Since LLVM 8 "OptRemarks" is built as a shared library only and also appears
 # under the llvm_libs for the "all" components map. This breaks static linking

@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <iostream>
 #include <string>
 
 bool DebugOpenMPFlag;
@@ -7,4 +8,9 @@ void DebugOpenMPInit() {
     DebugOpenMPFlag = false;
     if(DebugStr)
         DebugOpenMPFlag = (std::stoi(DebugStr) >= 1);
+}
+
+[[noreturn]] void fatalError(const char *msg, const char *file, int line) {
+    std::cerr << "Fatal error @ " << file << ":" << line << " :: " << msg << "\n";
+    std::abort();
 }

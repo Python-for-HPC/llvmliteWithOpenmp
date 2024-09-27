@@ -1,3 +1,6 @@
+#ifndef DEBUG_OPENMP_H
+#define DEBUG_OPENMP_H
+
 #ifdef NDEBUG
 
 #define DEBUG_ENABLE(X)
@@ -10,9 +13,14 @@ void DebugOpenMPInit();
 
 #define DEBUG_ENABLE(X)                                                        \
     do {                                                                       \
-        if (DebugOpenMPFlag) {                                                       \
+        if (DebugOpenMPFlag) {                                                 \
             X;                                                                 \
         }                                                                      \
     } while (false)
+
+#endif
+
+[[noreturn]] void fatalError(const char *msg, const char *file, int line);
+#define FATAL_ERROR(msg) fatalError(msg, __FILE__, __LINE__)
 
 #endif

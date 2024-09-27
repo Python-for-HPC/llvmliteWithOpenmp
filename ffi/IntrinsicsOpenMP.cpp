@@ -384,13 +384,11 @@ struct IntrinsicsOpenMP : public ModulePass {
                 else
                   OMPLoopInfo.Sched = OMPScheduleType::StaticChunked;
               } else
-                assert(false && "Unsupported scheduling type");
+                FATAL_ERROR("Unsupported scheduling type");
             } else if (Tag.startswith("QUAL.OMP.IF")) {
               assert(O.input_size() == 1 &&
                      "Expected single if condition value");
               ParRegionInfo.IfCondition = TagInputs[0];
-            } else if (Tag.startswith("QUAL.OMP.REDUCTION.ADD")) {
-              DSAValueMap[TagInputs[0]] = DSATypeInfo(DSA_REDUCTION_ADD);
             } else if (Tag.startswith("QUAL.OMP.TARGET.DEV_FUNC")) {
               assert(O.input_size() == 1 &&
                      "Expected a single device function name");
@@ -428,8 +426,7 @@ struct IntrinsicsOpenMP : public ModulePass {
                 TeamsInfo.NumTeams = TagInputs[0];
                 break;
               default:
-                // report_fatal_error("Unsupported qualifier in directive");
-                assert(false && "Unsupported qualifier in directive");
+                FATAL_ERROR("Unsupported qualifier in directive");
               }
             } else if (Tag.startswith("QUAL.OMP.THREAD_LIMIT")) {
               assert(O.input_size() == 1 &&
@@ -449,8 +446,7 @@ struct IntrinsicsOpenMP : public ModulePass {
                 TeamsInfo.ThreadLimit = TagInputs[0];
                 break;
               default:
-                // report_fatal_error("Unsupported qualifier in directive");
-                assert(false && "Unsupported qualifier in directive");
+                FATAL_ERROR("Unsupported qualifier in directive");
               }
             } else if (Tag.startswith("QUAL.OMP.NOWAIT")) {
               switch (Dir) {
@@ -461,7 +457,7 @@ struct IntrinsicsOpenMP : public ModulePass {
                 TargetInfo.NoWait = true;
                 break;
               default:
-                assert(false && "Unsupported nowait qualifier in directive");
+                FATAL_ERROR("Unsupported nowait qualifier in directive");
               }
             } else /* DSA Qualifiers */ {
               auto It = StringToDSA.find(Tag);
@@ -496,13 +492,15 @@ struct IntrinsicsOpenMP : public ModulePass {
                   DSAValueMap[TagInputs[0]] =
                       DSATypeInfo(It->second, CopyConstructor);
                 } else
+                  // Sink for DSA qualifiers that do not require special
+                  // handling.
                   DSAValueMap[TagInputs[0]] = DSATypeInfo(It->second);
               }
             }
           } else if (Tag == "OMP.DEVICE")
             IsDeviceTargetRegion = true;
           else
-            report_fatal_error("Unknown tag " + Tag);
+            FATAL_ERROR(("Unknown tag " + Tag).str().c_str());
         }
 
         assert(Dir != OMPD_unknown && "Expected valid OMP directive");
@@ -588,27 +586,27 @@ struct IntrinsicsOpenMP : public ModulePass {
                                     StructMappingInfoMap, IsDeviceTargetRegion);
         } else if (Dir == OMPD_target_data) {
           if (IsDeviceTargetRegion)
-            report_fatal_error("Target enter data should never appear inside a "
+            FATAL_ERROR("Target enter data should never appear inside a "
                                "device target region");
           CGIOMP.emitOMPTargetData(Fn, BBEntry, BBExit, DSAValueMap,
                                    StructMappingInfoMap);
         } else if (Dir == OMPD_target_enter_data) {
           if (IsDeviceTargetRegion)
-            report_fatal_error("Target enter data should never appear inside a "
+            FATAL_ERROR("Target enter data should never appear inside a "
                                "device target region");
 
           CGIOMP.emitOMPTargetEnterData(Fn, BBEntry, DSAValueMap,
                                         StructMappingInfoMap);
         } else if (Dir == OMPD_target_exit_data) {
           if (IsDeviceTargetRegion)
-            report_fatal_error("Target exit data should never appear inside a "
+            FATAL_ERROR("Target exit data should never appear inside a "
                                "device target region");
 
           CGIOMP.emitOMPTargetExitData(Fn, BBEntry, DSAValueMap,
                                        StructMappingInfoMap);
         } else if (Dir == OMPD_target_update) {
           if (IsDeviceTargetRegion)
-            report_fatal_error("Target exit data should never appear inside a "
+            FATAL_ERROR("Target exit data should never appear inside a "
                                "device target region");
 
           CGIOMP.emitOMPTargetUpdate(Fn, BBEntry, DSAValueMap,
@@ -632,12 +630,11 @@ struct IntrinsicsOpenMP : public ModulePass {
               OMPLoopInfo, ParRegionInfo, TargetInfo, StructMappingInfoMap,
               IsDeviceTargetRegion);
         } else {
-          assert(false && "Unknown directive");
-          report_fatal_error("Unknown directive");
+          FATAL_ERROR("Unknown directive");
         }
 
         if (verifyFunction(*Fn, &errs()))
-          report_fatal_error(
+          FATAL_ERROR(
               "Verification of IntrinsicsOpenMP lowering failed!");
       }
     }

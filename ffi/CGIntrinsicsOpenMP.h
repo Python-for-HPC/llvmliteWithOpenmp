@@ -7,6 +7,14 @@
 #include "llvm/Frontend/OpenMP/OMPIRBuilder.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
+#include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/Support/AtomicOrdering.h>
+#include <llvm/Transforms/Utils/BasicBlockUtils.h>
+
+#include "DebugOpenMP.h"
 
 using namespace llvm;
 using namespace omp;
@@ -24,6 +32,8 @@ enum DSAType {
   DSA_LASTPRIVATE,
   DSA_SHARED,
   DSA_REDUCTION_ADD,
+  DSA_REDUCTION_SUB,
+  DSA_REDUCTION_MUL,
   DSA_MAP_ALLOC,
   DSA_MAP_TO,
   DSA_MAP_FROM,
@@ -84,6 +94,8 @@ static const DenseMap<StringRef, DSAType> StringToDSA = {
     {"QUAL.OMP.LASTPRIVATE", DSA_LASTPRIVATE},
     {"QUAL.OMP.SHARED", DSA_SHARED},
     {"QUAL.OMP.REDUCTION.ADD", DSA_REDUCTION_ADD},
+    {"QUAL.OMP.REDUCTION.SUB", DSA_REDUCTION_SUB},
+    {"QUAL.OMP.REDUCTION.MUL", DSA_REDUCTION_MUL},
     {"QUAL.OMP.MAP.ALLOC", DSA_MAP_ALLOC},
     {"QUAL.OMP.MAP.TO", DSA_MAP_TO},
     {"QUAL.OMP.MAP.FROM", DSA_MAP_FROM},
@@ -176,34 +188,161 @@ struct TeamsInfoStruct {
 };
 
 struct CGReduction {
+  template <DSAType ReductionOperator>
+  static Value *emitOperation(IRBuilderBase &IRB, Value *LHS, Value *RHS);
+
+  template<DSAType ReductionOperator>
   static OpenMPIRBuilder::InsertPointTy
-  sumReduction(OpenMPIRBuilder::InsertPointTy IP, Value *LHS, Value *RHS,
+  reductionNonAtomic(OpenMPIRBuilder::InsertPointTy IP, Value *LHS, Value *RHS,
                Value *&Result) {
     IRBuilder<> Builder(IP.getBlock(), IP.getPoint());
-    Type *VTy = RHS->getType();
-    if (VTy->isIntegerTy())
-      Result = Builder.CreateAdd(LHS, RHS, "red.add");
-    else if (VTy->isFloatTy() || VTy->isDoubleTy())
-      Result = Builder.CreateFAdd(LHS, RHS, "red.add");
-    else
-      assert(false && "Unsupported type for sumReduction");
+    Result = emitOperation<ReductionOperator>(Builder, LHS, RHS);
     return Builder.saveIP();
   }
 
+  template <DSAType ReductionOperator>
+  static InsertPointTy emitAtomicOperationRMW(IRBuilderBase &IRB, Value *LHS,
+                                  Value *Partial);
+
+  template <DSAType ReductionOperator>
+  static InsertPointTy emitAtomicOperationCmpxchg(IRBuilderBase &IRB,
+                                                  InsertPointTy IP, Type *VTy,
+                                                  Value *LHS, Value *Partial) {
+    LLVMContext &Ctx = IRB.getContext();
+    unsigned int Bitwidth = VTy->getScalarSizeInBits();
+    auto *IntTy =
+        (Bitwidth == 64 ? Type::getInt64Ty(Ctx) : Type::getInt32Ty(Ctx));
+    auto *IntPtrTy =
+        (Bitwidth == 64 ? Type::getInt64PtrTy(Ctx) : Type::getInt32PtrTy(Ctx));
+
+    auto SaveIP = IRB.saveIP();
+    // TODO: move alloca to function entry point, may be outlined later, e.g.,
+    // for nested under parallel.
+    Value *AllocaTemp =
+        IRB.CreateAlloca(IntTy, nullptr, "atomic.alloca.tmp");
+    IRB.restoreIP(SaveIP);
+
+    Value *CastLHS =
+        IRB.CreateBitCast(LHS, IntPtrTy, LHS->getName() + ".cast.int");
+    auto *LoadAtomic =
+        IRB.CreateLoad(IntTy, CastLHS, LHS->getName() + ".load.atomic");
+    LoadAtomic->setAtomic(AtomicOrdering::Monotonic);
+
+    Value *CastFP = IRB.CreateBitCast(LoadAtomic, VTy, "cast.fp");
+    Value *RedOp = emitOperation<ReductionOperator>(IRB, CastFP, Partial);
+    Value *CastFAdd =
+        IRB.CreateBitCast(RedOp, IntTy, RedOp->getName() + ".cast.int");
+
+    auto *CmpXchg = IRB.CreateAtomicCmpXchg(CastLHS, LoadAtomic, CastFAdd,
+                                                None, AtomicOrdering::Monotonic,
+                                                AtomicOrdering::Monotonic);
+
+    auto *Returned = IRB.CreateExtractValue(CmpXchg, 0);
+    auto *StoreTemp = IRB.CreateStore(Returned, AllocaTemp);
+    auto *Cond = IRB.CreateExtractValue(CmpXchg, 1);
+    // Add unreachable as placholder for splitting.
+    auto *Unreachable = IRB.CreateUnreachable();
+    auto *IfTrueTerm = SplitBlockAndInsertIfThen(Cond, Unreachable, false);
+    auto *ExitBlock = IfTrueTerm->getParent();
+    auto *Retry = ExitBlock->getSingleSuccessor();
+    assert(Retry && "Expected single successor tail block");
+    // Erase the fall-through branch.
+    IfTrueTerm->eraseFromParent();
+
+    SaveIP = IRB.saveIP();
+    IRB.SetInsertPoint(Retry, Retry->getFirstInsertionPt());
+    auto *LoadReturned = IRB.CreateLoad(IntTy, AllocaTemp);
+    auto *CastLoad = IRB.CreateBitCast(LoadReturned, VTy);
+    // FAdd = IRB.CreateFAdd(CastLoad, Partial, "retry.add");
+    RedOp = emitOperation<ReductionOperator>(IRB, CastLoad, Partial);
+    CastFAdd =
+        IRB.CreateBitCast(RedOp, IntTy, RedOp->getName() + ".cast.int");
+    CmpXchg = IRB.CreateAtomicCmpXchg(CastLHS, LoadReturned, CastFAdd, None,
+                                          AtomicOrdering::Monotonic,
+                                          AtomicOrdering::Monotonic);
+    Returned = IRB.CreateExtractValue(CmpXchg, 0);
+    StoreTemp = IRB.CreateStore(Returned, AllocaTemp);
+    Cond = IRB.CreateExtractValue(CmpXchg, 1);
+    IRB.CreateCondBr(Cond, ExitBlock, Retry);
+    // Remove unreachable placeholder.
+    Unreachable->eraseFromParent();
+    IRB.restoreIP(SaveIP);
+
+    return InsertPointTy(ExitBlock, ExitBlock->getFirstInsertionPt());
+  }
+
+  template <DSAType ReductionOperator>
   static OpenMPIRBuilder::InsertPointTy
-  sumAtomicReduction(OpenMPIRBuilder::InsertPointTy IP, Type *VTy, Value *LHS,
-                     Value *RHS) {
+  reductionAtomic(OpenMPIRBuilder::InsertPointTy IP, Type *VTy, Value *LHS,
+                  Value *RHS) {
     IRBuilder<> Builder(IP.getBlock(), IP.getPoint());
     Value *Partial = Builder.CreateLoad(VTy, RHS, "red.partial");
     if (VTy->isIntegerTy())
-      Builder.CreateAtomicRMW(AtomicRMWInst::Add, LHS, Partial, None,
-                              AtomicOrdering::Monotonic);
-    else if (VTy->isFloatTy() || VTy->isDoubleTy())
-      Builder.CreateAtomicRMW(AtomicRMWInst::FAdd, LHS, Partial, None,
-                              AtomicOrdering::Monotonic);
+        switch (ReductionOperator) {
+        case DSA_REDUCTION_ADD:
+        case DSA_REDUCTION_SUB:
+            return emitAtomicOperationRMW<ReductionOperator>(Builder, LHS, Partial);
+            break;
+        case DSA_REDUCTION_MUL:
+            // RMW does not support mul.
+            return emitAtomicOperationCmpxchg<ReductionOperator>(Builder, IP, VTy, LHS,
+                                                          Partial);
+        default:
+            FATAL_ERROR("Unsupported reduction operation");
+        }
+    else if (VTy->isFloatTy() || VTy->isDoubleTy()) {
+        // NOTE: Using atomicrmw for floats is buggy for aarch64, fallback to
+        // cmpxchg codegen for now similarly to Clang. Revisit with newer LLVM
+        // versions.
+        // Builder.CreateAtomicRMW(AtomicRMWInst::FAdd, LHS, Partial, None,
+        //                        AtomicOrdering::Monotonic);
+        return emitAtomicOperationCmpxchg<ReductionOperator>(Builder, IP, VTy, LHS,
+                                                      Partial);
+    } else
+        FATAL_ERROR("Unsupported type for reductionAtomic");
+  }
+
+  template <DSAType ReductionOperator>
+  static Value *emitInitAndAppendInfo(
+      IRBuilderBase &IRB, InsertPointTy AllocaIP, Value *Orig,
+      SmallVectorImpl<OpenMPIRBuilder::ReductionInfo> &ReductionInfos) {
+    auto GetIdentityValue = []() {
+        switch (ReductionOperator) {
+        case DSA_REDUCTION_ADD:
+        case DSA_REDUCTION_SUB:
+            return 0;
+        case DSA_REDUCTION_MUL:
+            return 1;
+        default:
+            FATAL_ERROR("Unknown reduction type");
+        }
+    };
+
+    Type *VTy = Orig->getType()->getPointerElementType();
+    auto SaveIP = IRB.saveIP();
+    IRB.restoreIP(AllocaIP);
+    Value *Priv = IRB.CreateAlloca(VTy, /* ArraySize */ nullptr,
+                                               Orig->getName() + ".red.priv");
+    IRB.restoreIP(SaveIP);
+
+    // Store identity value based on operation and type.
+    if (VTy->isIntegerTy()) {
+      IRB.CreateStore(ConstantInt::get(VTy, GetIdentityValue()),
+                      Priv);
+    } else if (VTy->isFloatTy() || VTy->isDoubleTy()) {
+      IRB.CreateStore(ConstantFP::get(VTy, GetIdentityValue()),
+                      Priv);
+    }
     else
-      assert(false && "Unsupported type for sumAtomicReduction");
-    return Builder.saveIP();
+      FATAL_ERROR(
+          "Unsupported type to init with identity reduction value");
+
+    ReductionInfos.push_back(
+        {VTy, Orig, Priv,
+         CGReduction::reductionNonAtomic<ReductionOperator>,
+         CGReduction::reductionAtomic<ReductionOperator>});
+
+    return Priv;
   }
 };
 

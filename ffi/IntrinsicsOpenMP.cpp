@@ -376,13 +376,12 @@ struct IntrinsicsOpenMP : public ModulePass {
               OMPLoopInfo.Chunk = TagInputs[0];
 
               if (Tag == "QUAL.OMP.SCHEDULE.STATIC") {
-                assert(TagInputs[0] == Zero &&
-                       "Chunking is not yet supported, requires "
-                       "the use of omp_stride (static_chunked)");
                 if (TagInputs[0] == Zero)
                   OMPLoopInfo.Sched = OMPScheduleType::Static;
-                else
+                else {
                   OMPLoopInfo.Sched = OMPScheduleType::StaticChunked;
+                  OMPLoopInfo.Chunk = TagInputs[0];
+                }
               } else
                 FATAL_ERROR("Unsupported scheduling type");
             } else if (Tag.startswith("QUAL.OMP.IF")) {
@@ -414,6 +413,7 @@ struct IntrinsicsOpenMP : public ModulePass {
                 break;
               case OMPD_teams:
               case OMPD_teams_distribute:
+              case OMPD_teams_distribute_parallel_for:
                 TeamsInfo.NumTeams = TagInputs[0];
                 break;
               case OMPD_target_teams:
@@ -437,6 +437,7 @@ struct IntrinsicsOpenMP : public ModulePass {
                 break;
               case OMPD_teams:
               case OMPD_teams_distribute:
+              case OMPD_teams_distribute_parallel_for:
                 TeamsInfo.ThreadLimit = TagInputs[0];
                 break;
               case OMPD_target_teams:
@@ -511,6 +512,8 @@ struct IntrinsicsOpenMP : public ModulePass {
         const DebugLoc DL = BBEntry->getTerminator()->getDebugLoc();
 
         // Create the basic block structure to isolate the outlined region.
+        // Structure: BBEntry -> StartBB -> BBExit -> EndBB -> AfterBB
+        // TODO: Reverse naming on BBExit and EndBB?
         BasicBlock *StartBB = SplitBlock(BBEntry, DR->getEntry());
         assert(BBEntry->getUniqueSuccessor() == StartBB &&
                "Expected unique successor at region start BB");
@@ -520,6 +523,12 @@ struct IntrinsicsOpenMP : public ModulePass {
         assert(BBExit->getUniqueSuccessor() == EndBB &&
                "Expected unique successor at region end BB");
         BasicBlock *AfterBB = SplitBlock(EndBB, &*EndBB->getFirstInsertionPt());
+
+        DEBUG_ENABLE(dbgs() << "BBEntry " << BBEntry->getName() << "\n");
+        DEBUG_ENABLE(dbgs() << "StartBB " << StartBB->getName() << "\n");
+        DEBUG_ENABLE(dbgs() << "BBExit " << BBExit->getName() << "\n");
+        DEBUG_ENABLE(dbgs() << "EndBB " << EndBB->getName() << "\n");
+        DEBUG_ENABLE(dbgs() << "AfterBB " << AfterBB->getName() << "\n");
 
         // Define the default BodyGenCB lambda.
         auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
@@ -551,11 +560,10 @@ struct IntrinsicsOpenMP : public ModulePass {
           CGIOMP.emitOMPBarrier(Fn, BBEntry, OMPD_barrier);
         } else if (Dir == OMPD_for) {
           CGIOMP.emitOMPFor(DSAValueMap, OMPLoopInfo, StartBB, BBExit,
-                            /* IsStandalone */ true);
-          DEBUG_ENABLE(dbgs() << "=== For Fn\n" << *Fn << "=== End of For Fn\n");
+                            /* IsStandalone */ true, false);
         } else if (Dir == OMPD_parallel_for) {
           CGIOMP.emitOMPFor(DSAValueMap, OMPLoopInfo, StartBB, BBExit,
-                            /* IsStandalone */ false);
+                            /* IsStandalone */ false, false);
           CGIOMP.emitOMPParallel(DSAValueMap, nullptr, DL, Fn, BBEntry, StartBB,
                                  EndBB, AfterBB, FiniCB, ParRegionInfo);
         } else if (Dir == OMPD_task) {
@@ -571,11 +579,17 @@ struct IntrinsicsOpenMP : public ModulePass {
           CGIOMP.emitOMPTeams(DSAValueMap, nullptr, DL, Fn, BBEntry, StartBB,
                               EndBB, AfterBB, TeamsInfo);
         } else if (Dir == OMPD_distribute) {
-          CGIOMP.emitOMPDistribute(DSAValueMap, StartBB, BBExit, OMPLoopInfo,
-                                   /* IsStandalone */ true);
+          CGIOMP.emitOMPDistribute(DSAValueMap, OMPLoopInfo, StartBB, BBExit,
+                                   /* IsStandalone */ true, false);
         } else if (Dir == OMPD_teams_distribute) {
-          CGIOMP.emitOMPDistribute(DSAValueMap, StartBB, BBExit, OMPLoopInfo,
-                                   /* IsStandalone */ false);
+          CGIOMP.emitOMPDistribute(DSAValueMap, OMPLoopInfo, StartBB, BBExit,
+                                   /* IsStandalone */ false, false);
+          CGIOMP.emitOMPTeams(DSAValueMap, nullptr, DL, Fn, BBEntry, StartBB,
+                              EndBB, AfterBB, TeamsInfo);
+        } else if (Dir == OMPD_teams_distribute_parallel_for) {
+          CGIOMP.emitOMPDistributeParallelFor(DSAValueMap, StartBB, BBExit,
+                                              OMPLoopInfo, ParRegionInfo,
+                                              /* IsStandalone */ false);
           CGIOMP.emitOMPTeams(DSAValueMap, nullptr, DL, Fn, BBEntry, StartBB,
                               EndBB, AfterBB, TeamsInfo);
         } else if (Dir == OMPD_target_teams) {
@@ -587,34 +601,34 @@ struct IntrinsicsOpenMP : public ModulePass {
         } else if (Dir == OMPD_target_data) {
           if (IsDeviceTargetRegion)
             FATAL_ERROR("Target enter data should never appear inside a "
-                               "device target region");
+                        "device target region");
           CGIOMP.emitOMPTargetData(Fn, BBEntry, BBExit, DSAValueMap,
                                    StructMappingInfoMap);
         } else if (Dir == OMPD_target_enter_data) {
           if (IsDeviceTargetRegion)
             FATAL_ERROR("Target enter data should never appear inside a "
-                               "device target region");
+                        "device target region");
 
           CGIOMP.emitOMPTargetEnterData(Fn, BBEntry, DSAValueMap,
                                         StructMappingInfoMap);
         } else if (Dir == OMPD_target_exit_data) {
           if (IsDeviceTargetRegion)
             FATAL_ERROR("Target exit data should never appear inside a "
-                               "device target region");
+                        "device target region");
 
           CGIOMP.emitOMPTargetExitData(Fn, BBEntry, DSAValueMap,
                                        StructMappingInfoMap);
         } else if (Dir == OMPD_target_update) {
           if (IsDeviceTargetRegion)
             FATAL_ERROR("Target exit data should never appear inside a "
-                               "device target region");
+                        "device target region");
 
           CGIOMP.emitOMPTargetUpdate(Fn, BBEntry, DSAValueMap,
                                      StructMappingInfoMap);
         } else if (Dir == OMPD_target_teams_distribute) {
           TargetInfo.ExecMode = OMPTgtExecModeFlags::OMP_TGT_EXEC_MODE_GENERIC;
-          CGIOMP.emitOMPDistribute(DSAValueMap, StartBB, BBExit, OMPLoopInfo,
-                                   /* IsStandalone */ false);
+          CGIOMP.emitOMPDistribute(DSAValueMap, OMPLoopInfo, StartBB, BBExit,
+                                   /* IsStandalone */ false, false);
           CGIOMP.emitOMPTargetTeams(DSAValueMap, nullptr, DL, Fn, BBEntry,
                                     StartBB, EndBB, AfterBB, TargetInfo,
                                     &OMPLoopInfo, StructMappingInfoMap,

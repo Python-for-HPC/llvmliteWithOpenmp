@@ -10,6 +10,8 @@
 #include "llvm/Transforms/Utils/CodeExtractor.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
+#include "llvm/IR/CFG.h"
+#include <llvm/IR/BasicBlock.h>
 
 #include "CGIntrinsicsOpenMP.h"
 #include "DebugOpenMP.h"
@@ -801,7 +803,8 @@ void CGIntrinsicsOpenMP::emitOMPParallelDeviceRuntime(
       // TODO: Runtime expects values in Int64 type, fix with arguments in
       // struct.
       AllocaInst *TmpInt64 = OMPBuilder.Builder.CreateAlloca(
-          OMPBuilder.Int64, nullptr, "fpriv.byval");
+          OMPBuilder.Int64, nullptr,
+          CapturedVars[Idx]->getName() + "fpriv.byval");
       Value *Cast = OMPBuilder.Builder.CreateBitCast(
           TmpInt64, CapturedVars[Idx]->getType());
       OMPBuilder.Builder.CreateStore(Load, Cast);
@@ -1016,30 +1019,76 @@ FunctionCallee CGIntrinsicsOpenMP::getKmpcDistributeStaticInit(Type *Ty) {
   FATAL_ERROR("unknown OpenMP loop iterator bitwidth");
 }
 
-void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
-                                    OMPLoopInfoStruct &OMPLoopInfo,
-                                    BasicBlock *StartBB, BasicBlock *ExitBB,
-                                    bool IsStandalone) {
+void CGIntrinsicsOpenMP::emitLoop(DSAValueMapTy &DSAValueMap,
+                                  OMPLoopInfoStruct &OMPLoopInfo,
+                                  BasicBlock *StartBB, BasicBlock *ExitBB,
+                                  bool IsStandalone, bool IsDistribute,
+                                  bool IsDistributeParallelFor,
+                                  OMPDistributeInfoStruct *OMPDistributeInfo) {
   DEBUG_ENABLE(dbgs() << "OMPLoopInfo.IV " << *OMPLoopInfo.IV << "\n");
   DEBUG_ENABLE(dbgs() << "OMPLoopInfo.UB " << *OMPLoopInfo.UB << "\n");
   assert(OMPLoopInfo.IV && "Expected non-null IV");
   assert(OMPLoopInfo.UB && "Expected non-null UB");
 
+  assert(static_cast<int>(OMPLoopInfo.Sched) &&
+         "Expected non-zero loop schedule");
+
   BasicBlock *PreHeader = StartBB;
+  PreHeader->setName("omp.for.preheader");
   BasicBlock *Header = PreHeader->getUniqueSuccessor();
+  assert(Header && "Expected unique successor header");
+  Header->setName("omp.for.cond");
   BasicBlock *Exit = ExitBB;
+  Exit->setName("omp.for.exit");
   assert(Header && "Expected unique successor from PreHeader to Header");
   DEBUG_ENABLE(dbgs() << "=== PreHeader\n"
-                    << *PreHeader << "=== End of PreHeader\n");
+                      << *PreHeader << "=== End of PreHeader\n");
   DEBUG_ENABLE(dbgs() << "=== Header\n" << *Header << "=== End of Header\n");
-  DEBUG_ENABLE(dbgs() << "=== Exit \n" << *Exit << "=== End of Exit\n");
+  assert(Header->getTerminator()->getNumSuccessors() == 2 &&
+         "Expected 2 successors (loopbody, exit)");
+  BasicBlock *HeaderSuccBBs[2] = {Header->getTerminator()->getSuccessor(0),
+                                  Header->getTerminator()->getSuccessor(1)};
+  BasicBlock *LoopBody =
+      (HeaderSuccBBs[0] == Exit ? HeaderSuccBBs[1] : HeaderSuccBBs[0]);
+  assert(LoopBody && "Expected non-null loop body basic block\n");
+
+  assert(Header->hasNPredecessors(2) &&
+         "Expected exactly 2 predecessors to loop header (preheader, latch)");
+  BasicBlock *HeaderPredBBs[2] = {*predecessors(Header).begin(),
+                                  *std::next(predecessors(Header).begin(), 1)};
+  BasicBlock *Latch =
+      (HeaderPredBBs[0] == PreHeader ? HeaderPredBBs[1] : HeaderPredBBs[0]);
+  Latch->setName("omp.for.inc");
+  assert(Latch && "Expected latch basicblock");
+
+  auto ClearBlockInstructions = [](BasicBlock *BB) {
+    // Remove all instructions in the BB, iterate backwards to avoid
+    // dangling uses for safe deletion. The BB becomes malformed and
+    // requires a terminator added.
+    while (!BB->empty()) {
+      Instruction &I = BB->back();
+      assert(I.getNumUses() == 0 && "Expected no uses to delete");
+      I.eraseFromParent();
+    }
+  };
+  // Clear Latch, Header.
+  ClearBlockInstructions(Latch);
+  ClearBlockInstructions(Header);
+
+  DEBUG_ENABLE(dbgs() << "=== Exit\n" << *Exit << "=== End of Exit\n");
 
   Type *IVTy = OMPLoopInfo.IV->getType()->getPointerElementType();
   SmallVector<OpenMPIRBuilder::ReductionInfo> ReductionInfos;
 
-  FunctionCallee KmpcForStaticInit = getKmpcForStaticInit(IVTy);
-  FunctionCallee KmpcForStaticFini =
-      OMPBuilder.getOrCreateRuntimeFunction(M, OMPRTL___kmpc_for_static_fini);
+  FunctionCallee LoopStaticInit = ((IsDistribute && isOpenMPDeviceRuntime())
+                                       ? getKmpcDistributeStaticInit(IVTy)
+                                       : getKmpcForStaticInit(IVTy));
+  FunctionCallee LoopStaticFini =
+      ((IsDistribute && isOpenMPDeviceRuntime())
+           ? OMPBuilder.getOrCreateRuntimeFunction(
+                 M, OMPRTL___kmpc_distribute_static_fini)
+           : OMPBuilder.getOrCreateRuntimeFunction(
+                 M, OMPRTL___kmpc_for_static_fini));
 
   const DebugLoc DL = PreHeader->getTerminator()->getDebugLoc();
   OpenMPIRBuilder::LocationDescription Loc(
@@ -1048,6 +1097,7 @@ void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
   uint32_t SrcLocStrSize;
   Constant *SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(Loc, SrcLocStrSize);
   Value *SrcLoc = OMPBuilder.getOrCreateIdent(SrcLocStr, SrcLocStrSize);
+  Value *ThreadNum = nullptr;
 
   // Create allocas for static init values.
   // TODO: Move the AllocaIP to the start of the containing function.
@@ -1064,6 +1114,199 @@ void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
       OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.for.stride");
   Value *PUpperBound =
       OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.for.ub");
+
+  // Store distribute LB, UB to be used by combined loop constructs.
+  if (IsDistribute)
+    if (OMPDistributeInfo) {
+      OMPDistributeInfo->LB = PLowerBound;
+      OMPDistributeInfo->UB = PUpperBound;
+    }
+
+  // Create BasicBlock structure.
+  BasicBlock *MinUBBlock =
+      PreHeader->splitBasicBlock(PreHeader->getTerminator(), "omp.for.min.ub");
+  BasicBlock *CapUBBlock = MinUBBlock->splitBasicBlock(
+      MinUBBlock->getTerminator(), "omp.for.cap.ub");
+  BasicBlock *SetupLoopBlock =
+      CapUBBlock->splitBasicBlock(CapUBBlock->getTerminator(), "omp.for.setup");
+  BasicBlock *ForEndBB =
+      ExitBB->splitBasicBlockBefore(ExitBB->getFirstInsertionPt());
+  ForEndBB->setName("omp.for.end");
+
+  BasicBlock *DispatchCondBB = nullptr;
+  BasicBlock *DispatchIncBB = nullptr;
+  BasicBlock *DispatchEndBB = nullptr;
+  if (OMPLoopInfo.Sched == OMPScheduleType::StaticChunked ||
+      OMPLoopInfo.Sched == OMPScheduleType::DistributeChunked) {
+    DispatchCondBB = SetupLoopBlock->splitBasicBlock(
+        SetupLoopBlock->getTerminator(), "omp.dispatch.cond");
+    DispatchIncBB = ExitBB->splitBasicBlockBefore(ExitBB->getFirstInsertionPt(),
+                                                  "omp.dispatch.inc");
+    DispatchEndBB = ExitBB->splitBasicBlockBefore(ExitBB->getFirstInsertionPt(),
+                                                  "omp.dispatch.end");
+  }
+
+  Constant *Zero_I32 = ConstantInt::get(I32Type, 0);
+  Constant *One = ConstantInt::get(IVTy, 1);
+
+  // Extend PreHeader
+  {
+    OMPBuilder.Builder.SetInsertPoint(PreHeader->getTerminator());
+    // Store the initial normalized upper bound to PUpperBound.
+    Value *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.UB);
+    OMPBuilder.Builder.CreateStore(LoadUB, PUpperBound);
+
+    Value *LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.LB);
+    OMPBuilder.Builder.CreateStore(LoadLB, PLowerBound);
+    OMPBuilder.Builder.CreateStore(One, PStride);
+    OMPBuilder.Builder.CreateStore(Zero_I32, PLastIter);
+
+    // If Chunk is not specified (nullptr), default to one, complying with
+    // the OpenMP specification.
+    if (!OMPLoopInfo.Chunk)
+      OMPLoopInfo.Chunk = One;
+    Value *ChunkCast = OMPBuilder.Builder.CreateIntCast(OMPLoopInfo.Chunk, IVTy,
+                                                        /*isSigned*/ false);
+
+    Constant *SchedulingType =
+        ConstantInt::get(I32Type, static_cast<int>(OMPLoopInfo.Sched));
+
+    ThreadNum = OMPBuilder.getOrCreateThreadID(SrcLoc);
+    DEBUG_ENABLE(dbgs() << "=== SchedulingType " << *SchedulingType << "\n");
+    DEBUG_ENABLE(dbgs() << "=== PLowerBound " << *PLowerBound << "\n");
+    DEBUG_ENABLE(dbgs() << "=== PUpperBound " << *PUpperBound << "\n");
+    DEBUG_ENABLE(dbgs() << "=== PStride " << *PStride << "\n");
+    DEBUG_ENABLE(dbgs() << "=== Incr " << *One << "\n");
+    DEBUG_ENABLE(dbgs() << "=== Schedule "
+                        << static_cast<int>(OMPLoopInfo.Sched) << "\n");
+    DEBUG_ENABLE(dbgs() << "=== Chunk " << *ChunkCast << "\n");
+    OMPBuilder.Builder.CreateCall(
+        LoopStaticInit, {SrcLoc, ThreadNum, SchedulingType, PLastIter,
+                         PLowerBound, PUpperBound, PStride, One, ChunkCast});
+  }
+
+  // Create MinUBBlock.
+  {
+    OMPBuilder.Builder.SetInsertPoint(MinUBBlock,
+                                      MinUBBlock->getFirstInsertionPt());
+    auto *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
+    auto *LoadGlobalUB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.UB);
+    auto *Cond = OMPBuilder.Builder.CreateICmpUGT(LoadUB, LoadGlobalUB);
+    OMPBuilder.Builder.CreateCondBr(Cond, CapUBBlock, SetupLoopBlock);
+    MinUBBlock->getTerminator()->eraseFromParent();
+  }
+
+  // Create CapUBBlock
+  {
+    OMPBuilder.Builder.SetInsertPoint(CapUBBlock,
+                                      CapUBBlock->getFirstInsertionPt());
+    auto *LoadGlobalUB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.UB);
+    OMPBuilder.Builder.CreateStore(LoadGlobalUB, PUpperBound);
+  }
+
+  // Create SetupLoopBlock
+  {
+    OMPBuilder.Builder.SetInsertPoint(SetupLoopBlock,
+                                      SetupLoopBlock->getFirstInsertionPt());
+    Value *LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
+    OMPBuilder.Builder.CreateStore(LoadLB, OMPLoopInfo.IV);
+  }
+
+  // Create Header
+  {
+    auto SaveIP = OMPBuilder.Builder.saveIP();
+    OMPBuilder.Builder.SetInsertPoint(Header);
+    auto *LoadIV = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.IV);
+    auto *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
+    auto *Cond = OMPBuilder.Builder.CreateICmpSLE(LoadIV, LoadUB);
+    OMPBuilder.Builder.CreateCondBr(Cond, LoopBody, ForEndBB);
+    OMPBuilder.Builder.restoreIP(SaveIP);
+  }
+
+  // Create Latch.
+  {
+    auto SaveIP = OMPBuilder.Builder.saveIP();
+    OMPBuilder.Builder.SetInsertPoint(Latch);
+    Value *LoadIV = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.IV);
+    if (IsDistribute && IsDistributeParallelFor) {
+      Value *LoadStride = OMPBuilder.Builder.CreateLoad(IVTy, PStride);
+      Value *Inc = OMPBuilder.Builder.CreateAdd(LoadIV, LoadStride);
+      OMPBuilder.Builder.CreateStore(Inc, OMPLoopInfo.IV);
+    } else {
+      Value *Inc = OMPBuilder.Builder.CreateAdd(LoadIV, One);
+      OMPBuilder.Builder.CreateStore(Inc, OMPLoopInfo.IV);
+    }
+
+    // If it's a combined "distribute parallel for" with static/distribute
+    // chunked then fall through to the strided dispatch increment.
+    if (IsDistributeParallelFor &&
+        ((OMPLoopInfo.Sched == OMPScheduleType::StaticChunked) ||
+         (OMPLoopInfo.Sched == OMPScheduleType::DistributeChunked)))
+      OMPBuilder.Builder.CreateBr(DispatchIncBB);
+    else
+      OMPBuilder.Builder.CreateBr(Header);
+
+    OMPBuilder.Builder.restoreIP(SaveIP);
+  }
+
+  assert(ThreadNum && "Expected non-null threadnum");
+  if (OMPLoopInfo.Sched == OMPScheduleType::Static ||
+      OMPLoopInfo.Sched == OMPScheduleType::Distribute) {
+    OMPBuilder.Builder.SetInsertPoint(ForEndBB,
+                                      ForEndBB->getFirstInsertionPt());
+    OMPBuilder.Builder.CreateCall(LoopStaticFini, {SrcLoc, ThreadNum});
+  } else if (OMPLoopInfo.Sched == OMPScheduleType::StaticChunked ||
+             OMPLoopInfo.Sched == OMPScheduleType::DistributeChunked) {
+    assert(DispatchCondBB && "Expected non-null dispatch cond bb");
+    assert(DispatchIncBB && "Expected non-null dispatch inc bb");
+    assert(DispatchEndBB && "Expected non-null dispatch end bb");
+    // Create DispatchCond
+    {
+      auto SaveIP = OMPBuilder.Builder.saveIP();
+      DispatchCondBB->getTerminator()->eraseFromParent();
+      OMPBuilder.Builder.SetInsertPoint(DispatchCondBB);
+      auto *LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
+      OMPBuilder.Builder.CreateStore(LoadLB, OMPLoopInfo.IV);
+      auto *LoadIV = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.IV);
+      auto *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
+      auto *Cond = OMPBuilder.Builder.CreateICmpSLE(LoadIV, LoadUB);
+      OMPBuilder.Builder.CreateCondBr(Cond, Header, DispatchEndBB);
+      OMPBuilder.Builder.restoreIP(SaveIP);
+    }
+    // Create DispatchIncBB.
+    {
+      auto SaveIP = OMPBuilder.Builder.saveIP();
+      DispatchIncBB->getTerminator()->eraseFromParent();
+      OMPBuilder.Builder.SetInsertPoint(DispatchIncBB);
+      auto *LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
+      auto *LoadStride = OMPBuilder.Builder.CreateLoad(IVTy, PStride);
+      auto *LBPlusStride = OMPBuilder.Builder.CreateAdd(LoadLB, LoadStride);
+      OMPBuilder.Builder.CreateStore(LBPlusStride, PLowerBound);
+
+      auto *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
+      auto *UBPlusStride = OMPBuilder.Builder.CreateAdd(LoadUB, LoadStride);
+      OMPBuilder.Builder.CreateStore(UBPlusStride, PUpperBound);
+
+      // OMPBuilder.Builder.CreateBr(DispatchCondBB);
+      OMPBuilder.Builder.CreateBr(MinUBBlock);
+      OMPBuilder.Builder.restoreIP(SaveIP);
+    }
+    // Create ForEndBB
+    {
+      ForEndBB->getTerminator()->eraseFromParent();
+      OMPBuilder.Builder.SetInsertPoint(ForEndBB);
+      OMPBuilder.Builder.CreateBr(DispatchIncBB);
+    }
+
+    // Create DispatchEndBB
+    {
+      OMPBuilder.Builder.SetInsertPoint(DispatchEndBB,
+                                        DispatchEndBB->getFirstInsertionPt());
+      OMPBuilder.Builder.CreateCall(LoopStaticFini, {SrcLoc, ThreadNum});
+    }
+  } else {
+    FATAL_ERROR("Unknown loop schedule type");
+  }
 
   OpenMPIRBuilder::OutlineInfo OI;
   OI.EntryBB = PreHeader;
@@ -1136,57 +1379,6 @@ void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
     OMPBuilder.Builder.restoreIP(CurrentIP);
   };
 
-  OMPBuilder.Builder.SetInsertPoint(PreHeader->getTerminator());
-
-  // Store the initial normalized upper bound to PUpperBound.
-  Value *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.UB);
-  OMPBuilder.Builder.CreateStore(LoadUB, PUpperBound);
-
-  Constant *One = ConstantInt::get(IVTy, 1);
-  // Value *LoadStart = OMPBuilder.Builder.CreateLoad(
-  //     IVTy, OMPLoopInfo.Start);
-  // OMPBuilder.Builder.CreateStore(LoadStart, PStart);
-  Value *LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.LB);
-  OMPBuilder.Builder.CreateStore(LoadLB, PLowerBound);
-  OMPBuilder.Builder.CreateStore(One, PStride);
-
-  // If Chunk is not specified (nullptr), default to one, complying with the
-  // OpenMP specification.
-  if (!OMPLoopInfo.Chunk)
-    OMPLoopInfo.Chunk = One;
-  Value *ChunkCast = OMPBuilder.Builder.CreateIntCast(OMPLoopInfo.Chunk, IVTy,
-                                                      /*isSigned*/ false);
-
-  Value *ThreadNum = OMPBuilder.getOrCreateThreadID(SrcLoc);
-
-  // TODO: add more scheduling types.
-  Constant *SchedulingType =
-      ConstantInt::get(I32Type, static_cast<int>(OMPLoopInfo.Sched));
-
-  DEBUG_ENABLE(dbgs() << "=== SchedulingType " << *SchedulingType << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PLowerBound " << *PLowerBound << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PUpperBound " << *PUpperBound << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PStride " << *PStride << "\n");
-  DEBUG_ENABLE(dbgs() << "=== Incr " << *One << "\n");
-  DEBUG_ENABLE(dbgs() << "=== ChunkCast " << *ChunkCast << "\n");
-  OMPBuilder.Builder.CreateCall(
-      KmpcForStaticInit, {SrcLoc, ThreadNum, SchedulingType, PLastIter,
-                          PLowerBound, PUpperBound, PStride, One, ChunkCast});
-  // Load returned upper bound to UB.
-  Value *LoadPUpperBound = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
-  OMPBuilder.Builder.CreateStore(LoadPUpperBound, OMPLoopInfo.UB);
-  // Add lower bound to IV.
-  Value *LowerBound = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
-  OMPBuilder.Builder.CreateStore(LowerBound, OMPLoopInfo.IV);
-
-  // Add fini call, reductions, and barrier after the loop exit block.
-  BasicBlock *FiniBB = SplitBlock(Exit, &*Exit->getFirstInsertionPt());
-  FiniBB->setName("omp.for.exit");
-  BasicBlock *NextFiniBB = SplitBlock(FiniBB, &*FiniBB->getFirstInsertionPt());
-  NextFiniBB->setName("omp.for.exit.next");
-  OMPBuilder.Builder.SetInsertPoint(FiniBB, FiniBB->getFirstInsertionPt());
-  OMPBuilder.Builder.CreateCall(KmpcForStaticFini, {SrcLoc, ThreadNum});
-
   auto EmitLastPrivate = [&](InsertPointTy CodeGenIP) {
     auto ShouldReplace = [&BlockSet](Use &U) {
       if (auto *UserI = dyn_cast<Instruction>(U.getUser()))
@@ -1243,19 +1435,21 @@ void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
     }
   };
 
+  BasicBlock *FiniBB =
+      (OMPLoopInfo.Sched == OMPScheduleType::Static) ? ForEndBB : DispatchEndBB;
   EmitLastPrivate(InsertPointTy(FiniBB, FiniBB->end()));
 
   // Emit reductions, barrier, privatize if standalone.
   if (IsStandalone) {
     PrivatizeWithReductions();
     if (!ReductionInfos.empty()) {
-      OMPBuilder.Builder.SetInsertPoint(FiniBB->getTerminator());
+      OMPBuilder.Builder.SetInsertPoint(ForEndBB->getTerminator());
       OMPBuilder.createReductions(OpenMPIRBuilder::LocationDescription(
                                       OMPBuilder.Builder.saveIP(), Loc.DL),
                                   AllocaIP, ReductionInfos);
     }
 
-    OMPBuilder.Builder.SetInsertPoint(NextFiniBB->getTerminator());
+    OMPBuilder.Builder.SetInsertPoint(ExitBB->getTerminator());
     OMPBuilder.createBarrier(OpenMPIRBuilder::LocationDescription(
                                  OMPBuilder.Builder.saveIP(), Loc.DL),
                              omp::Directive::OMPD_for,
@@ -1265,6 +1459,21 @@ void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
 
   if (verifyFunction(*PreHeader->getParent(), &errs()))
     FATAL_ERROR("Verification of omp for lowering failed!");
+}
+
+void CGIntrinsicsOpenMP::emitOMPFor(DSAValueMapTy &DSAValueMap,
+                                    OMPLoopInfoStruct &OMPLoopInfo,
+                                    BasicBlock *StartBB, BasicBlock *ExitBB,
+                                    bool IsStandalone,
+                                    bool IsDistributeParallelFor) {
+    // Set default loop schedule.
+    if (static_cast<int>(OMPLoopInfo.Sched) == 0)
+        OMPLoopInfo.Sched =
+            (isOpenMPDeviceRuntime() ? OMPScheduleType::StaticChunked
+                                     : OMPScheduleType::Static);
+
+    emitLoop(DSAValueMap, OMPLoopInfo, StartBB, ExitBB, IsStandalone, false,
+             IsDistributeParallelFor);
 }
 
 void CGIntrinsicsOpenMP::emitOMPTask(DSAValueMapTy &DSAValueMap, Function *Fn,
@@ -2368,7 +2577,8 @@ void CGIntrinsicsOpenMP::emitOMPTeamsDeviceRuntime(
       // TODO: Runtime expects values in Int64 type, fix with arguments in
       // struct.
       AllocaInst *TmpInt64 = OMPBuilder.Builder.CreateAlloca(
-          OMPBuilder.Int64, nullptr, "fpriv.byval");
+          OMPBuilder.Int64, nullptr,
+          CapturedVars[Idx]->getName() + "fpriv.byval");
       Value *Cast = OMPBuilder.Builder.CreateBitCast(
           TmpInt64, CapturedVars[Idx]->getType());
       OMPBuilder.Builder.CreateStore(Load, Cast);
@@ -2468,7 +2678,8 @@ void CGIntrinsicsOpenMP::emitOMPTeamsHostRuntime(
       // TODO: Runtime expects values in Int64 type, fix with arguments in
       // struct.
       AllocaInst *TmpInt64 = OMPBuilder.Builder.CreateAlloca(
-          OMPBuilder.Int64, nullptr, "fpriv.byval");
+          OMPBuilder.Int64, nullptr,
+          CapturedVars[Idx]->getName() + ".fpriv.byval");
       Value *Cast = OMPBuilder.Builder.CreateBitCast(
           TmpInt64, CapturedVars[Idx]->getType());
       OMPBuilder.Builder.CreateStore(Load, Cast);
@@ -2603,161 +2814,15 @@ void CGIntrinsicsOpenMP::emitOMPTargetUpdate(
        Constant::getNullValue(OMPBuilder.VoidPtrPtr)});
 }
 
-void CGIntrinsicsOpenMP::emitOMPDistribute(DSAValueMapTy &DSAValueMap,
-                                           BasicBlock *StartBB,
-                                           BasicBlock *ExitBB,
-                                           OMPLoopInfoStruct &OMPLoopInfo,
-                                           bool IsStandalone) {
-  // TODO: de-duplicate code, there is large overlap with omp for code
-  // generation.
-  DEBUG_ENABLE(dbgs() << "OMPLoopInfo.IV " << *OMPLoopInfo.IV << "\n");
-  DEBUG_ENABLE(dbgs() << "OMPLoopInfo.UB " << *OMPLoopInfo.UB << "\n");
-  assert(OMPLoopInfo.IV && "Expected non-null IV");
-  assert(OMPLoopInfo.UB && "Expected non-null UB");
+void CGIntrinsicsOpenMP::emitOMPDistribute(
+    DSAValueMapTy &DSAValueMap, OMPLoopInfoStruct &OMPLoopInfo,
+    BasicBlock *StartBB, BasicBlock *ExitBB, bool IsStandalone,
+    bool IsDistributeParallelFor, OMPDistributeInfoStruct *DistributeInfo) {
+    if (static_cast<int>(OMPLoopInfo.Sched) == 0)
+        OMPLoopInfo.Sched = OMPScheduleType::Distribute;
 
-  BasicBlock *PreHeader = StartBB;
-  BasicBlock *LoopHeader = PreHeader->getUniqueSuccessor();
-  BasicBlock *LoopExit = ExitBB;
-  assert(LoopHeader &&
-         "Expected unique successor from PreHeader to LoopHeader");
-  DEBUG_ENABLE(dbgs() << "=== PreHeader\n"
-                    << *PreHeader << "=== End of PreHeader\n");
-  DEBUG_ENABLE(dbgs() << "=== LoopHeader\n"
-                    << *LoopHeader << "=== End of LoopHeader\n");
-  DEBUG_ENABLE(dbgs() << "=== LoopExit \n"
-                    << *LoopExit << "=== End of LoopExit\n");
-  Type *IVTy = OMPLoopInfo.IV->getType()->getPointerElementType();
-
-  FunctionCallee KmpcForStaticInit = getKmpcForStaticInit(IVTy);
-  FunctionCallee KmpcForStaticFini =
-      OMPBuilder.getOrCreateRuntimeFunction(M, OMPRTL___kmpc_for_static_fini);
-
-  const DebugLoc DL = PreHeader->getTerminator()->getDebugLoc();
-  OpenMPIRBuilder::LocationDescription Loc(
-      InsertPointTy(PreHeader, PreHeader->getTerminator()->getIterator()), DL);
-
-  uint32_t SrcLocStrSize;
-  Constant *SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(Loc, SrcLocStrSize);
-  Value *SrcLoc = OMPBuilder.getOrCreateIdent(SrcLocStr, SrcLocStrSize);
-
-  // Create allocas for static init values.
-  InsertPointTy AllocaIP(PreHeader, PreHeader->getFirstInsertionPt());
-  Type *I32Type = Type::getInt32Ty(M.getContext());
-  OMPBuilder.Builder.restoreIP(AllocaIP);
-  Value *PLastIter = OMPBuilder.Builder.CreateAlloca(I32Type, nullptr,
-                                                     "omp.distribute.is_last");
-  Value *PLowerBound =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.lb");
-  Value *PStride =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.stride");
-  Value *PUpperBound =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.ub");
-
-  OpenMPIRBuilder::OutlineInfo OI;
-  OI.EntryBB = PreHeader;
-  OI.ExitBB = LoopExit;
-  SmallPtrSet<BasicBlock *, 8> BlockSet;
-  SmallVector<BasicBlock *, 8> BlockVector;
-  OI.collectBlocks(BlockSet, BlockVector);
-
-  // TODO: De-duplicate privatization code.
-  auto Privatizer = [&]() {
-    for (auto &It : DSAValueMap) {
-      Value *Orig = It.first;
-      DSAType DSA = It.second.Type;
-      FunctionCallee CopyConstructor = It.second.CopyConstructor;
-      Value *ReplacementValue = nullptr;
-      Type *VTy = Orig->getType()->getPointerElementType();
-
-      if (DSA == DSA_SHARED)
-        continue;
-
-      // Store previous uses to set them to the ReplacementValue after
-      // privatization codegen.
-      SetVector<Use *> Uses;
-      for (Use &U : Orig->uses())
-        if (auto *UserI = dyn_cast<Instruction>(U.getUser()))
-          if (BlockSet.count(UserI->getParent()))
-            Uses.insert(&U);
-
-      OMPBuilder.Builder.restoreIP(AllocaIP);
-      if (DSA == DSA_PRIVATE) {
-        ReplacementValue = OMPBuilder.Builder.CreateAlloca(
-            VTy, /*ArraySize */ nullptr, Orig->getName() + ".distribute.priv");
-        OMPBuilder.Builder.CreateStore(Constant::getNullValue(VTy),
-                                       ReplacementValue);
-      } else if (DSA == DSA_FIRSTPRIVATE) {
-        Value *V = OMPBuilder.Builder.CreateLoad(
-            VTy, Orig, Orig->getName() + ".distribute.firstpriv.reload");
-        ReplacementValue = OMPBuilder.Builder.CreateAlloca(
-            VTy, /*ArraySize */ nullptr,
-            Orig->getName() + ".distribute.firstpriv.copy");
-        if (CopyConstructor) {
-          Value *Copy = OMPBuilder.Builder.CreateCall(CopyConstructor, {V});
-          OMPBuilder.Builder.CreateStore(Copy, ReplacementValue);
-        } else
-          OMPBuilder.Builder.CreateStore(V, ReplacementValue);
-      } else
-        FATAL_ERROR("Unsupported privatization");
-
-      assert(ReplacementValue && "Expected non-null ReplacementValue");
-
-      for (Use *UPtr : Uses)
-        UPtr->set(ReplacementValue);
-    }
-  };
-
-  OMPBuilder.Builder.SetInsertPoint(PreHeader->getTerminator());
-
-  // Store the initial normalized upper bound to PUpperBound.
-  Value *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.UB);
-  OMPBuilder.Builder.CreateStore(LoadUB, PUpperBound);
-
-  Constant *Zero = ConstantInt::get(IVTy, 0);
-  Constant *One = ConstantInt::get(IVTy, 1);
-  OMPBuilder.Builder.CreateStore(Zero, PLowerBound);
-  OMPBuilder.Builder.CreateStore(One, PStride);
-
-  // If Chunk is not specified (nullptr), default to one, complying with the
-  // OpenMP specification.
-  if (!OMPLoopInfo.Chunk)
-    OMPLoopInfo.Chunk = One;
-  Value *ChunkCast = OMPBuilder.Builder.CreateIntCast(OMPLoopInfo.Chunk, IVTy,
-                                                      /*isSigned*/ false);
-
-  Value *ThreadNum = OMPBuilder.getOrCreateThreadID(SrcLoc);
-
-  // TODO: add more scheduling types.
-  Constant *SchedulingType =
-      ConstantInt::get(I32Type, static_cast<int>(OMPLoopInfo.DistSched));
-
-  DEBUG_ENABLE(dbgs() << "=== SchedulingType " << *SchedulingType << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PLowerBound " << *PLowerBound << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PUpperBound " << *PUpperBound << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PStride " << *PStride << "\n");
-  DEBUG_ENABLE(dbgs() << "=== Incr " << *One << "\n");
-  DEBUG_ENABLE(dbgs() << "=== ChunkCast " << *ChunkCast << "\n");
-  OMPBuilder.Builder.CreateCall(
-      KmpcForStaticInit, {SrcLoc, ThreadNum, SchedulingType, PLastIter,
-                          PLowerBound, PUpperBound, PStride, One, ChunkCast});
-  // Load returned upper bound to UB.
-  Value *LoadPUpperBound = OMPBuilder.Builder.CreateLoad(
-      PUpperBound->getType()->getPointerElementType(), PUpperBound);
-  OMPBuilder.Builder.CreateStore(LoadPUpperBound, OMPLoopInfo.UB);
-  // Add lower bound to IV.
-  Value *LowerBound = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
-  // Value *LoadIV = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.IV);
-  // Value *UpdateIV = OMPBuilder.Builder.CreateAdd(LoadIV, LowerBound);
-  OMPBuilder.Builder.CreateStore(LowerBound, OMPLoopInfo.IV);
-
-  // Add fini call after the loop exit block.
-  BasicBlock *FiniBB = SplitBlock(LoopExit, &*LoopExit->getFirstInsertionPt());
-  OMPBuilder.Builder.SetInsertPoint(FiniBB, FiniBB->getFirstInsertionPt());
-  OMPBuilder.Builder.CreateCall(KmpcForStaticFini, {SrcLoc, ThreadNum});
-
-  // Run the privatizer last to update values in the whole generated code.
-  if (IsStandalone)
-    Privatizer();
+    emitLoop(DSAValueMap, OMPLoopInfo, StartBB, ExitBB, IsStandalone, true,
+             IsDistributeParallelFor, DistributeInfo);
 }
 
 void CGIntrinsicsOpenMP::emitOMPDistributeParallelFor(
@@ -2765,314 +2830,103 @@ void CGIntrinsicsOpenMP::emitOMPDistributeParallelFor(
     OMPLoopInfoStruct &OMPLoopInfo, ParRegionInfoStruct &ParRegionInfo,
     bool IsStandalone) {
 
-  DEBUG_ENABLE(dbgs() << "OMPLoopInfo.IV " << *OMPLoopInfo.IV << "\n");
-  DEBUG_ENABLE(dbgs() << "OMPLoopInfo.Start " << *OMPLoopInfo.Start << "\n");
-  DEBUG_ENABLE(dbgs() << "OMPLoopInfo.LB " << *OMPLoopInfo.LB << "\n");
-  DEBUG_ENABLE(dbgs() << "OMPLoopInfo.UB " << *OMPLoopInfo.UB << "\n");
-  assert(OMPLoopInfo.IV && "Expected non-null IV");
-  assert(OMPLoopInfo.Start && "Expected non-null Start");
-  assert(OMPLoopInfo.LB && "Expected non-null LB");
-  assert(OMPLoopInfo.UB && "Expected non-null UB");
+  Function *Fn = StartBB->getParent();
+  const DebugLoc DL = StartBB->getTerminator()->getDebugLoc();
 
-  BasicBlock *PreHeader = StartBB;
-  BasicBlock *LoopHeader = PreHeader->getUniqueSuccessor();
-  BasicBlock *LoopExit = ExitBB;
-  assert(LoopHeader && "Expected unique successor from PreHeader to Header");
-  DEBUG_ENABLE(dbgs() << "=== PreHeader\n"
-                    << *PreHeader << "=== End of PreHeader\n");
-  DEBUG_ENABLE(dbgs() << "=== LoopHeader\n"
-                    << *LoopHeader << "=== End of LoopHeader\n");
-  DEBUG_ENABLE(dbgs() << "=== LoopExit \n"
-                    << *LoopExit << "=== End of LoopExit\n");
-
-  Type *IVTy = OMPLoopInfo.IV->getType()->getPointerElementType();
-  Function *Fn = PreHeader->getParent();
-
-  FunctionCallee KmpcDistributeStaticInit =
-      (isOpenMPDeviceRuntime() ? getKmpcDistributeStaticInit(IVTy)
-                               : getKmpcForStaticInit(IVTy));
-  FunctionCallee KmpcDistributeStaticFini =
-      (isOpenMPDeviceRuntime() ? OMPBuilder.getOrCreateRuntimeFunction(
-                                     M, OMPRTL___kmpc_distribute_static_fini)
-                               : OMPBuilder.getOrCreateRuntimeFunction(
-                                     M, OMPRTL___kmpc_for_static_fini));
-
-  const DebugLoc DL = PreHeader->getTerminator()->getDebugLoc();
-  OpenMPIRBuilder::LocationDescription Loc(
-      InsertPointTy(PreHeader, PreHeader->getTerminator()->getIterator()), DL);
-
-  uint32_t SrcLocStrSize;
-  Constant *SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(Loc, SrcLocStrSize);
-  Value *SrcLoc = OMPBuilder.getOrCreateIdent(SrcLocStr, SrcLocStrSize);
-
-  // Create basic block structure.
+  BasicBlock *DistPreheader =
+      StartBB->splitBasicBlock(StartBB->begin(), "omp.distribute.preheader");
+  BasicBlock *DistHeader = DistPreheader->splitBasicBlock(
+      DistPreheader->begin(), "omp.distribute.header");
   BasicBlock *ForEntry =
-      SplitBlock(PreHeader, &*PreHeader->getFirstInsertionPt());
-  ForEntry->setName("omp.inner.for.entry");
+      DistHeader->splitBasicBlock(DistHeader->begin(), "omp.inner.for.entry");
   BasicBlock *ForBegin =
-      SplitBlock(ForEntry, &*ForEntry->getFirstInsertionPt());
-  ForBegin->setName("omp.inner.for.begin");
-  BasicBlock *CondTrue = SplitBlock(PreHeader, PreHeader->getTerminator());
-  CondTrue->setName("omp.distribute.min.ub");
-  BasicBlock *DistributePreheader =
-      SplitBlock(CondTrue, CondTrue->getTerminator());
-  DistributePreheader->setName("omp.distribute.preheader");
-  BasicBlock *DistributeCond =
-      SplitBlock(DistributePreheader, DistributePreheader->getTerminator());
-  DistributeCond->setName("omp.distribute.cond");
+      ForEntry->splitBasicBlock(ForEntry->begin(), "omp.inner.for.begin");
   BasicBlock *ForEnd = splitBlockBefore(
       ExitBB, &*ExitBB->getFirstInsertionPt(), /*DomTreeUpdater*/ nullptr,
       /*LoopInfo*/ nullptr, /*MemorySSAUpdater*/ nullptr);
   ForEnd->setName("omp.inner.for.end");
   BasicBlock *ForExit = SplitBlock(ForEnd, ForEnd->getTerminator());
   ForExit->setName("omp.inner.for.exit");
-  BasicBlock *DistributeInc = SplitBlock(ForExit, ForExit->getTerminator());
-  DistributeInc->setName("omp.distribute.inc");
-  BasicBlock *DistributeExit =
-      SplitBlock(DistributeInc, DistributeInc->getTerminator());
-  DistributeExit->setName("omp.distribute.exit");
+  BasicBlock *ForExitAfter = SplitBlock(ForExit, ForExit->getTerminator());
+  ForExitAfter->setName("omp.inner.for.exit.after");
+  BasicBlock *DistInc = ForExitAfter->splitBasicBlock(
+      ForExitAfter->getTerminator(), "omp.distribute.inc");
+  BasicBlock *DistExit =
+      DistInc->splitBasicBlock(DistInc->getTerminator(), "omp.distribute.exit");
 
-  // Create allocas for distribute loop values.
-  // TODO: Rethink AllocaIP, better if at Fn entry but breaks DSAValueMap if
-  // the parent outlined function is not emitted first.
-  // InsertPointTy AllocaIP(&Fn->getEntryBlock(),
-  //                       Fn->getEntryBlock().getFirstInsertionPt());
-  InsertPointTy AllocaIP(PreHeader, PreHeader->getFirstInsertionPt());
-  Type *I32Type = Type::getInt32Ty(M.getContext());
-  OMPBuilder.Builder.restoreIP(AllocaIP);
-  Value *PDistributeIV =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.iv");
-  Value *PLastIter = OMPBuilder.Builder.CreateAlloca(I32Type, nullptr,
-                                                     "omp.distribute.is_last");
-  Value *PStride =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.stride");
-
-  Value *PStart = nullptr;
-  Value *PLowerBound = nullptr;
-  Value *PUpperBound = nullptr;
-
-  // TODO: Remove, the fololowing code is unneeded, loop info values are passed
-  // by val.
-  /*
-  if (isOpenMPDeviceRuntime()) {
-    // Create globalized allocation pointers for the start and distribute loop
-    // bounds to be shareable with parallel threads.
-    FunctionCallee KmpcAllocShared =
-        OMPBuilder.getOrCreateRuntimeFunction(M, OMPRTL___kmpc_alloc_shared);
-    Value *PStartAlloc = OMPBuilder.Builder.CreateCall(
-        KmpcAllocShared,
-        {ConstantInt::get(OMPBuilder.SizeTy,
-                          M.getDataLayout().getTypeAllocSize(IVTy))});
-    PStart = OMPBuilder.Builder.CreateBitCast(
-        PStartAlloc, IVTy->getPointerTo(), "omp.distribute.start");
-    Value *PLowerBoundAlloc = OMPBuilder.Builder.CreateCall(
-        KmpcAllocShared,
-        {ConstantInt::get(OMPBuilder.SizeTy,
-                          M.getDataLayout().getTypeAllocSize(IVTy))});
-    PLowerBound = OMPBuilder.Builder.CreateBitCast(
-        PLowerBoundAlloc, IVTy->getPointerTo(), "omp.distribute.lb");
-    // OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.lb");
-    Value *PUpperBoundAlloc = OMPBuilder.Builder.CreateCall(
-        KmpcAllocShared,
-        {ConstantInt::get(OMPBuilder.SizeTy,
-                          M.getDataLayout().getTypeAllocSize(IVTy))});
-    PUpperBound = OMPBuilder.Builder.CreateBitCast(
-        PUpperBoundAlloc, IVTy->getPointerTo(), "omp.distribute.ub");
-    // OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.ub");
+  // Create skeleton DistHeader
+  {
+    // Dummy condition to create the expected structure.
+    DistHeader->getTerminator()->eraseFromParent();
+    OMPBuilder.Builder.SetInsertPoint(DistHeader);
+    auto *Cond =
+        OMPBuilder.Builder.CreateICmpSLE(OMPLoopInfo.IV, OMPLoopInfo.UB);
+    OMPBuilder.Builder.CreateCondBr(Cond, ForEntry, DistExit);
   }
-  */
-  // Create globalized allocation pointers for the start and distribute loop
-  // bounds to be shareable with parallel threads.
-  PStart =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.start");
-  PLowerBound =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.lb");
-  PUpperBound =
-      OMPBuilder.Builder.CreateAlloca(IVTy, nullptr, "omp.distribute.ub");
-
-  assert(PStart && "Expected non-null PStart");
-  assert(PLowerBound && "Expected non-null PLowerBound");
-  assert(PUpperBound && "Expected non-null PUpperBound");
-
-  OMPBuilder.Builder.SetInsertPoint(PreHeader->getTerminator());
-  // Store the start and initial normalized upper bound to PUpperBound.
-  Value *LoadStart = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.Start);
-  OMPBuilder.Builder.CreateStore(LoadStart, PStart);
-  Value *LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.UB);
-  OMPBuilder.Builder.CreateStore(LoadUB, PUpperBound);
-
-  Constant *Zero = ConstantInt::get(IVTy, 0);
-  Constant *One = ConstantInt::get(IVTy, 1);
-  OMPBuilder.Builder.CreateStore(Zero, PLowerBound);
-  OMPBuilder.Builder.CreateStore(One, PStride);
-  Constant *ZeroI32 = ConstantInt::get(I32Type, 0);
-  OMPBuilder.Builder.CreateStore(ZeroI32, PLastIter);
-
-  // If Chunk is not specified (nullptr), default to one, complying with the
-  // OpenMP specification.
-  if (!OMPLoopInfo.Chunk) {
-    if (isOpenMPDeviceRuntime()) {
-      FunctionCallee NumTeamThreadsFn = OMPBuilder.getOrCreateRuntimeFunction(
-          M, llvm::omp::RuntimeFunction::
-                 OMPRTL___kmpc_get_hardware_num_threads_in_block);
-      Value *NumTeamThreads =
-          OMPBuilder.Builder.CreateCall(NumTeamThreadsFn, {});
-      OMPLoopInfo.Chunk = NumTeamThreads;
-    } else {
-      OMPLoopInfo.Chunk = One;
-    }
+  // Create skeleton DistInc
+  {
+    DistInc->getTerminator()->eraseFromParent();
+    OMPBuilder.Builder.SetInsertPoint(DistInc);
+    OMPBuilder.Builder.CreateBr(DistHeader);
   }
-  Value *ChunkCast = OMPBuilder.Builder.CreateIntCast(OMPLoopInfo.Chunk, IVTy,
-                                                      /*isSigned*/ false);
 
-  Value *ThreadNum = OMPBuilder.getOrCreateThreadID(SrcLoc);
-
-  // TODO: add more scheduling types.
-  // If targeting the GPU device runtime distribute strided (chunked), else
-  // distribute consecutively.
-  auto DistSchedType = (isOpenMPDeviceRuntime() ? OMPScheduleType::DistributeChunked
-                                            : OMPScheduleType::Distribute);
-  Constant *SchedulingType =
-      ConstantInt::get(I32Type, static_cast<int>(DistSchedType));
-
-  DEBUG_ENABLE(dbgs() << "=== SchedulingType " << *SchedulingType << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PLowerBound " << *PLowerBound << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PUpperBound " << *PUpperBound << "\n");
-  DEBUG_ENABLE(dbgs() << "=== PStride " << *PStride << "\n");
-  DEBUG_ENABLE(dbgs() << "=== Incr " << *One << "\n");
-  DEBUG_ENABLE(dbgs() << "=== ChunkCast " << *ChunkCast << "\n");
-  OMPBuilder.Builder.CreateCall(KmpcDistributeStaticInit,
-                                {SrcLoc, ThreadNum, SchedulingType, PLastIter,
-                                 PLowerBound, PUpperBound, PStride, One,
-                                 ChunkCast});
-
-  LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
-  Value *LoadGlobalUB = OMPBuilder.Builder.CreateLoad(IVTy, OMPLoopInfo.UB);
-  Value *Cond = OMPBuilder.Builder.CreateICmpSGT(LoadUB, LoadGlobalUB);
-  OMPBuilder.Builder.CreateCondBr(Cond, CondTrue, DistributePreheader);
-  PreHeader->getTerminator()->eraseFromParent();
-
-  // Emit CondTrue and Set UB = min(UB, GlobalUB)
-  OMPBuilder.Builder.SetInsertPoint(CondTrue->getTerminator());
-  OMPBuilder.Builder.CreateStore(LoadGlobalUB, PUpperBound);
-
-  // Add lower bound to the distribute loop IV.
-  OMPBuilder.Builder.SetInsertPoint(DistributePreheader->getTerminator());
-  Value *LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
-  OMPBuilder.Builder.CreateStore(LoadLB, PDistributeIV);
-
-  // Emit Cond block for the distribute outer loop.
-  OMPBuilder.Builder.SetInsertPoint(DistributeCond);
-  DistributeCond->getTerminator()->eraseFromParent();
-  Value *LoadIV = OMPBuilder.Builder.CreateLoad(IVTy, PDistributeIV);
-  Cond = OMPBuilder.Builder.CreateICmpSLE(LoadIV, LoadGlobalUB);
-  OMPBuilder.Builder.CreateCondBr(Cond, ForEntry, DistributeExit);
-
-  // Emit Inc block.
-  OMPBuilder.Builder.SetInsertPoint(DistributeInc->getTerminator());
-  LoadIV = OMPBuilder.Builder.CreateLoad(IVTy, PDistributeIV);
-  Value *LoadStride = OMPBuilder.Builder.CreateLoad(IVTy, PStride);
-  Value *UpdateIV = OMPBuilder.Builder.CreateAdd(LoadIV, LoadStride);
-  OMPBuilder.Builder.CreateStore(UpdateIV, PDistributeIV);
-
-  LoadLB = OMPBuilder.Builder.CreateLoad(IVTy, PLowerBound);
-  Value *UpdateLB = OMPBuilder.Builder.CreateAdd(LoadLB, LoadStride);
-  OMPBuilder.Builder.CreateStore(UpdateLB, PLowerBound);
-
-  LoadUB = OMPBuilder.Builder.CreateLoad(IVTy, PUpperBound);
-  Value *UpdateUB = OMPBuilder.Builder.CreateAdd(LoadUB, LoadStride);
-  OMPBuilder.Builder.CreateStore(UpdateUB, PUpperBound);
-
-  DistributeInc->getTerminator()->setSuccessor(0, DistributeCond);
-
-  // Emit Exit block for the distribute outer loop.
-  OMPBuilder.Builder.SetInsertPoint(DistributeExit->getTerminator());
-  OMPBuilder.Builder.CreateCall(KmpcDistributeStaticFini, {SrcLoc, ThreadNum});
-
-  DEBUG_ENABLE(dbgs() << "=== Dump Distribute DistributeParallelFor\n"
-                    << *PreHeader->getParent()
-                    << "=== End Distribute DistributeParallelFor\n");
-  // TODO: Privatization runs by parallel for codegen.
-  // Run the privatizer last to update values in the whole generated code.
-  // if (IsStandalone)
-  //  Privatizer();
-
-  // Emit parallel for.
-
-  // Replace uses of Start, LB, UB in the parallel for inner loop to the
-  // globalized Start, distribute LB, UB.
-  OpenMPIRBuilder::OutlineInfo OI;
-  OI.EntryBB = ForBegin;
-  OI.ExitBB = ForEnd;
-  SmallPtrSet<BasicBlock *, 8> BlockSet;
-  SmallVector<BasicBlock *, 8> BlockVector;
-  OI.collectBlocks(BlockSet, BlockVector);
-
-  auto ShouldReplace = [&BlockSet](Use &U) {
-    if (auto *UserI = dyn_cast<Instruction>(U.getUser()))
-      if (BlockSet.count(UserI->getParent()))
-        return true;
-
-    return false;
-  };
-
-  // Replace the inner, parallel for loop LB, UB.
-  OMPLoopInfo.Start->replaceUsesWithIf(PStart, ShouldReplace);
-  OMPLoopInfo.LB->replaceUsesWithIf(PLowerBound, ShouldReplace);
-  OMPLoopInfo.UB->replaceUsesWithIf(PUpperBound, ShouldReplace);
-
-  OMPLoopInfoStruct OMPInnerLoopInfo;
-  OMPInnerLoopInfo.IV = OMPLoopInfo.IV;
-  OMPInnerLoopInfo.Start = OMPLoopInfo.Start;
-  OMPInnerLoopInfo.LB = PLowerBound;
-  OMPInnerLoopInfo.UB = PUpperBound;
-  // If targeting the GPU device chunk for strided execution, else chunk
-  // consecutively.
-  OMPInnerLoopInfo.Sched =
-      (isOpenMPDeviceRuntime() ? OMPScheduleType::StaticChunked
-                               : OMPScheduleType::Static);
-  // TODO: schedule, chunk.
-  emitOMPFor(DSAValueMap, OMPInnerLoopInfo, ForBegin, ForEnd,
-             /* IsStandalone */ false);
-
-  DEBUG_ENABLE(dbgs() << "=== Dump DistributeFor DistributeParallelFor\n"
-                    << *PreHeader->getParent()
-                    << "=== End DistributeFor DistributeParallelFor\n");
-
+  OMPLoopInfo.Sched = (isOpenMPDeviceRuntime() ? OMPScheduleType::StaticChunked
+                                               : OMPScheduleType::Static);
+  emitOMPFor(DSAValueMap, OMPLoopInfo, ForBegin, ForEnd, IsStandalone, true);
   BasicBlock *ParEntryBB = ForEntry;
   DEBUG_ENABLE(dbgs() << "ParEntryBB " << ParEntryBB->getName() << "\n");
   BasicBlock *ParStartBB = ForBegin;
   DEBUG_ENABLE(dbgs() << "ParStartBB " << ParStartBB->getName() << "\n");
   BasicBlock *ParEndBB = ForExit;
   DEBUG_ENABLE(dbgs() << "ParEndBB " << ParEndBB->getName() << "\n");
-  BasicBlock *ParAfterBB = DistributeInc;
+  BasicBlock *ParAfterBB = ForExitAfter;
   DEBUG_ENABLE(dbgs() << "ParAfterBB " << ParAfterBB->getName() << "\n");
-
-  // Prepare DSAValueMap for parallel
-  DSAValueMap[PStart] = DSA_FIRSTPRIVATE;
-  DSAValueMap[PLowerBound] = DSA_FIRSTPRIVATE;
-  DSAValueMap[PUpperBound] = DSA_FIRSTPRIVATE;
 
   emitOMPParallel(
       DSAValueMap, nullptr, DL, Fn, ParEntryBB, ParStartBB, ParEndBB,
       ParAfterBB, [](auto) {}, ParRegionInfo);
 
-  DEBUG_ENABLE(dbgs() << "=== After Dump DistributeParallelFor\n"
-                    << *PreHeader->getParent()
-                    << "=== End DistributeParallelFor\n");
+  // By default, to maximize performance on GPUs, we do static chunked with a
+  // chunk size equal to the block size when targeting the device runtime.
+  if (isOpenMPDeviceRuntime()) {
+    OMPLoopInfo.Sched = OMPScheduleType::DistributeChunked;
+    // Extend DistPreheader
+    {
+      OMPBuilder.Builder.SetInsertPoint(DistPreheader,
+                                        DistPreheader->getFirstInsertionPt());
 
-  // Delete further unused DSA entries.
-  DSAValueMap.erase(PStart);
-  DSAValueMap.erase(PLowerBound);
-  DSAValueMap.erase(PUpperBound);
+      FunctionCallee NumTeamThreadsFn = OMPBuilder.getOrCreateRuntimeFunction(
+          M, llvm::omp::RuntimeFunction::
+                 OMPRTL___kmpc_get_hardware_num_threads_in_block);
+      Value *NumTeamThreads =
+          OMPBuilder.Builder.CreateCall(NumTeamThreadsFn, {});
+      OMPLoopInfo.Chunk = NumTeamThreads;
+    }
+  } else {
+    OMPLoopInfo.Sched = OMPScheduleType::Distribute;
+  }
 
-  if (verifyFunction(*Fn, &errs()))
-    FATAL_ERROR(
-        "Verification of DistributeParallelFor lowering failed!");
+  OMPDistributeInfoStruct DistributeInfo;
+  emitOMPDistribute(DSAValueMap, OMPLoopInfo, DistPreheader, DistExit,
+                    IsStandalone, true, &DistributeInfo);
 
-  DEBUG_ENABLE(dbgs() << "=== Dump DistributeParallelFor\n"
-                    << *PreHeader->getParent()
-                    << "=== End DistributeParallelFor\n");
+  // Replace upper bound, lower bound to the "parallel for" with distribute
+  // bounds.
+  {
+    assert(DistributeInfo.LB && "Expected non-null distribute lower bound");
+    assert(DistributeInfo.UB && "Expected non-null distribute upper bound");
+    auto ShouldReplace = [&](Use &U) {
+      if (auto *UserI = dyn_cast<Instruction>(U.getUser()))
+        if (UserI->getParent() == ForEntry)
+          return true;
+
+      return false;
+    };
+
+    // Replace the inner, parallel for loop LB, UB.
+    OMPLoopInfo.LB->replaceUsesWithIf(DistributeInfo.LB, ShouldReplace);
+    OMPLoopInfo.UB->replaceUsesWithIf(DistributeInfo.UB, ShouldReplace);
+  }
 }
 
 void CGIntrinsicsOpenMP::emitOMPTargetTeamsDistributeParallelFor(
@@ -3081,16 +2935,18 @@ void CGIntrinsicsOpenMP::emitOMPTargetTeamsDistributeParallelFor(
     BasicBlock *ExitBB, BasicBlock *AfterBB, OMPLoopInfoStruct &OMPLoopInfo,
     ParRegionInfoStruct &ParRegionInfo, TargetInfoStruct &TargetInfo,
     StructMapTy &StructMappingInfoMap, bool IsDeviceTargetRegion) {
-  emitOMPDistributeParallelFor(DSAValueMap, StartBB, ExitBB, OMPLoopInfo,
-                               ParRegionInfo,
-                               /* isStandalone */ false);
-  // Lower target_teams.
-  emitOMPTargetTeams(DSAValueMap, nullptr, DL, Fn, EntryBB, StartBB, EndBB,
-                     AfterBB, TargetInfo, &OMPLoopInfo, StructMappingInfoMap,
-                     IsDeviceTargetRegion);
 
-  // Alternative codegen, starting from top-down and renaming values using the
-  // ValueToValueMap.
+    emitOMPDistributeParallelFor(DSAValueMap, StartBB, ExitBB, OMPLoopInfo,
+                                 ParRegionInfo,
+                                 /* isStandalone */ false);
+
+    emitOMPTargetTeams(DSAValueMap, nullptr, DL, Fn, EntryBB,
+                       StartBB, EndBB, AfterBB,
+                       TargetInfo, &OMPLoopInfo, StructMappingInfoMap,
+                       IsDeviceTargetRegion);
+
+    // Alternative codegen, starting from top-down and renaming values using the
+    // ValueToValueMap.
 #if 0
   ValueToValueMapTy VMap;
   // Lower target_teams.

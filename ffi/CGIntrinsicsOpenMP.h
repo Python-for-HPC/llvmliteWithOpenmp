@@ -77,6 +77,8 @@ static const DenseMap<StringRef, Directive> StringToDir = {
     {"DIR.OMP.TEAMS", OMPD_teams},
     {"DIR.OMP.DISTRIBUTE", OMPD_distribute},
     {"DIR.OMP.TEAMS.DISTRIBUTE", OMPD_teams_distribute},
+    {"DIR.OMP.TEAMS.DISTRIBUTE.PARALLEL.LOOP",
+     OMPD_teams_distribute_parallel_for},
     {"DIR.OMP.TARGET.TEAMS", OMPD_target_teams},
     {"DIR.OMP.TARGET.DATA", OMPD_target_data},
     {"DIR.OMP.TARGET.ENTER.DATA", OMPD_target_enter_data},
@@ -162,10 +164,16 @@ struct OMPLoopInfoStruct {
   Value *Start = nullptr;
   Value *LB = nullptr;
   Value *UB = nullptr;
-  // Implementation defined: set default schedule to static.
-  OMPScheduleType DistSched = OMPScheduleType::Distribute;
-  OMPScheduleType Sched = OMPScheduleType::Static;
+  // 0 is invalid, schedule will be set by the user or to reasonable defaults
+  // by the pass.
+  OMPScheduleType DistSched = static_cast<OMPScheduleType>(0);
+  OMPScheduleType Sched = static_cast<OMPScheduleType>(0);
   Value *Chunk = nullptr;
+};
+
+struct OMPDistributeInfoStruct {
+  Value *UB = nullptr;
+  Value *LB = nullptr;
 };
 
 struct TargetInfoStruct {
@@ -363,7 +371,8 @@ public:
                        ParRegionInfoStruct &ParRegionInfo);
 
   void emitOMPFor(DSAValueMapTy &DSAValueMap, OMPLoopInfoStruct &OMPLoopInfo,
-                  BasicBlock *StartBB, BasicBlock *ExitBB, bool IsStandalone);
+                  BasicBlock *StartBB, BasicBlock *ExitBB, bool IsStandalone,
+                  bool IsDistributeParallelFor);
 
   void emitOMPTask(DSAValueMapTy &DSAValueMap, Function *Fn,
                    BasicBlock *BBEntry, BasicBlock *StartBB, BasicBlock *EndBB,
@@ -415,9 +424,11 @@ public:
                            DSAValueMapTy &DSAValueMap,
                            StructMapTy &StructMappingInfoMap);
 
-  void emitOMPDistribute(DSAValueMapTy &DSAValueMap, BasicBlock *StartBB,
-                         BasicBlock *ExitBB, OMPLoopInfoStruct &OMPLoopInfo,
-                         bool IsStandalone);
+  void emitOMPDistribute(DSAValueMapTy &DSAValueMap,
+                         OMPLoopInfoStruct &OMPLoopInfo, BasicBlock *StartBB,
+                         BasicBlock *ExitBB, bool IsStandalone,
+                         bool IsDistributeParallelFor,
+                         OMPDistributeInfoStruct *DistributeInfo = nullptr);
 
   void emitOMPDistributeParallelFor(DSAValueMapTy &DSAValueMap,
                                     BasicBlock *StartBB, BasicBlock *ExitBB,
@@ -497,6 +508,11 @@ private:
                            DSAValueMapTy &DSAValueMap,
                            StructMapTy &StructMappingInfoMap,
                            TargetInfoStruct &TargetInfo);
+
+  void emitLoop(DSAValueMapTy &DSAValueMap, OMPLoopInfoStruct &OMPLoopInfo,
+                BasicBlock *StartBB, BasicBlock *ExitBB, bool IsStandalone,
+                bool IsDistribute, bool IsDistributeParallelFor,
+                OMPDistributeInfoStruct *OMPDistributeInfo = nullptr);
 
   FunctionCallee getKmpcForStaticInit(Type *Ty);
   FunctionCallee getKmpcDistributeStaticInit(Type *Ty);
